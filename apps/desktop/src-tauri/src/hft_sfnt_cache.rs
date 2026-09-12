@@ -26,6 +26,13 @@ const TARGET_UNITS_PER_EM: u16 = 1000;
 /// unlike the old fixed 12-line flattening, curves remain curves in `glyf`.
 const CUBIC_QUADRATIC_MAX_ERROR: f64 = 0.125;
 const CUBIC_QUADRATIC_MAX_DEPTH: u8 = 12;
+/// TrueType simple-glyph coordinates are integral font units. Rounding any control
+/// or endpoint contributes at most sqrt(0.5) units of Euclidean displacement, and
+/// quadratic Bézier weights form a convex combination. This bounds the rendered
+/// curve against the source cubic after quantization as well as approximation.
+#[cfg(test)]
+const CUBIC_QUADRATIC_QUANTIZED_MAX_ERROR: f64 =
+    CUBIC_QUADRATIC_MAX_ERROR + std::f64::consts::FRAC_1_SQRT_2;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -785,11 +792,7 @@ fn bitmap_pixel(pixels: &[u8], row_start: usize, column: usize) -> bool {
     byte & (0x80 >> (column & 7)) != 0
 }
 
-fn translate_contours(
-    contours: &[Contour],
-    dx: i32,
-    dy: i32,
-) -> Result<GlyphContours, String> {
+fn translate_contours(contours: &[Contour], dx: i32, dy: i32) -> Result<GlyphContours, String> {
     let mut translated = Vec::with_capacity(contours.len());
     for contour in contours {
         let mut target = Vec::with_capacity(contour.len());
@@ -1074,7 +1077,7 @@ fn outline_to_contours(
                     scale_float_point(to, source_em, target_em),
                 ];
                 let mut quadratic = Vec::new();
-                approximate_cubic_with_quadratics(cubic, 0, &mut quadratic);
+                approximate_cubic_with_quadratics(cubic, 0, &mut quadratic)?;
                 for segment in quadratic {
                     current.push(quantize_float_point(segment.control, false)?);
                     current.push(quantize_float_point(segment.to, true)?);
@@ -1145,13 +1148,13 @@ fn approximate_cubic_with_quadratics(
     cubic: [FloatPoint; 4],
     depth: u8,
     out: &mut Vec<QuadraticSegment>,
-) {
+) -> Result<(), String> {
     let [p0, p1, p2, p3] = cubic;
     let dx = p3.x - 3.0 * p2.x + 3.0 * p1.x - p0.x;
     let dy = p3.y - 3.0 * p2.y + 3.0 * p1.y - p0.y;
     let max_error = dx.hypot(dy) / (12.0 * 3.0_f64.sqrt());
 
-    if max_error <= CUBIC_QUADRATIC_MAX_ERROR || depth >= CUBIC_QUADRATIC_MAX_DEPTH {
+    if max_error <= CUBIC_QUADRATIC_MAX_ERROR {
         // Match the cubic at t=0, 1/2, 1. Solving the quadratic midpoint equation
         // gives q = (-p0 + 3p1 + 3p2 - p3) / 4.
         out.push(QuadraticSegment {
@@ -1161,7 +1164,12 @@ fn approximate_cubic_with_quadratics(
             },
             to: p3,
         });
-        return;
+        return Ok(());
+    }
+    if depth >= CUBIC_QUADRATIC_MAX_DEPTH {
+        return Err(format!(
+            "HFT cubic→quadratic 변환이 depth {CUBIC_QUADRATIC_MAX_DEPTH}에서 허용 오차를 만족하지 못했습니다: {max_error:.6} > {CUBIC_QUADRATIC_MAX_ERROR:.6} font units"
+        ));
     }
 
     // de Casteljau split at t=1/2. This is exact, and preserves the original cubic
@@ -1172,8 +1180,9 @@ fn approximate_cubic_with_quadratics(
     let p012 = midpoint(p01, p12);
     let p123 = midpoint(p12, p23);
     let p0123 = midpoint(p012, p123);
-    approximate_cubic_with_quadratics([p0, p01, p012, p0123], depth + 1, out);
-    approximate_cubic_with_quadratics([p0123, p123, p23, p3], depth + 1, out);
+    approximate_cubic_with_quadratics([p0, p01, p012, p0123], depth + 1, out)?;
+    approximate_cubic_with_quadratics([p0123, p123, p23, p3], depth + 1, out)?;
+    Ok(())
 }
 
 fn midpoint(a: FloatPoint, b: FloatPoint) -> FloatPoint {
@@ -1184,7 +1193,14 @@ fn midpoint(a: FloatPoint, b: FloatPoint) -> FloatPoint {
 }
 
 fn scale_i32(value: i32, source_em: u16, target_em: u16) -> i32 {
-    ((value as i64 * target_em as i64 + (source_em as i64 / 2)) / source_em as i64) as i32
+    let numerator = value as i64 * target_em as i64;
+    let denominator = source_em as i64;
+    let rounded = if numerator >= 0 {
+        (numerator + denominator / 2) / denominator
+    } else {
+        (numerator - denominator / 2) / denominator
+    };
+    rounded as i32
 }
 
 fn scale_u16(value: u16, source_em: u16, target_em: u16) -> u16 {
@@ -1292,9 +1308,7 @@ fn build_ttf(
     assemble_sfnt(tables)
 }
 
-fn encode_simple_glyph(
-    contours: &[Contour],
-) -> Result<(Vec<u8>, Bounds, u16, u16), String> {
+fn encode_simple_glyph(contours: &[Contour]) -> Result<(Vec<u8>, Bounds, u16, u16), String> {
     let filtered = contours
         .iter()
         .filter(|contour| !contour.is_empty())
@@ -1972,8 +1986,146 @@ mod tests {
         SfntGlyph {
             codepoint: 'A' as u32,
             advance: 650,
-            contours: vec![vec![(50, 0), (325, 700), (600, 0)]],
+            contours: vec![vec![
+                SfntPoint::on_curve(50, 0),
+                SfntPoint::on_curve(325, 700),
+                SfntPoint::on_curve(600, 0),
+            ]],
         }
+    }
+
+    fn eval_cubic(cubic: [FloatPoint; 4], t: f64) -> FloatPoint {
+        let mt = 1.0 - t;
+        FloatPoint {
+            x: mt.powi(3) * cubic[0].x
+                + 3.0 * mt.powi(2) * t * cubic[1].x
+                + 3.0 * mt * t.powi(2) * cubic[2].x
+                + t.powi(3) * cubic[3].x,
+            y: mt.powi(3) * cubic[0].y
+                + 3.0 * mt.powi(2) * t * cubic[1].y
+                + 3.0 * mt * t.powi(2) * cubic[2].y
+                + t.powi(3) * cubic[3].y,
+        }
+    }
+
+    fn eval_quadratic(from: FloatPoint, segment: QuadraticSegment, t: f64) -> FloatPoint {
+        let mt = 1.0 - t;
+        FloatPoint {
+            x: mt * mt * from.x + 2.0 * mt * t * segment.control.x + t * t * segment.to.x,
+            y: mt * mt * from.y + 2.0 * mt * t * segment.control.y + t * t * segment.to.y,
+        }
+    }
+
+    #[test]
+    fn adaptive_cubic_to_quadratic_respects_error_bound() {
+        let cubic = [
+            FloatPoint { x: 0.0, y: 0.0 },
+            FloatPoint { x: 0.0, y: 1000.0 },
+            FloatPoint {
+                x: 1000.0,
+                y: 1000.0,
+            },
+            FloatPoint { x: 1000.0, y: 0.0 },
+        ];
+        let mut segments = Vec::new();
+        approximate_cubic_with_quadratics(cubic, 0, &mut segments).unwrap();
+        assert!(segments.len() > 1);
+        assert!(segments.len().is_power_of_two());
+
+        let count = segments.len() as f64;
+        let mut from = cubic[0];
+        let mut observed_max = 0.0f64;
+        for (index, segment) in segments.iter().copied().enumerate() {
+            for sample in 0..=64 {
+                let local_t = sample as f64 / 64.0;
+                let global_t = (index as f64 + local_t) / count;
+                let exact = eval_cubic(cubic, global_t);
+                let approx = eval_quadratic(from, segment, local_t);
+                observed_max = observed_max.max((exact.x - approx.x).hypot(exact.y - approx.y));
+            }
+            from = segment.to;
+        }
+        assert!(
+            observed_max <= CUBIC_QUADRATIC_MAX_ERROR + 1e-9,
+            "observed error {observed_max} exceeds configured bound"
+        );
+    }
+
+    #[test]
+    fn hft_cubic_emits_true_type_off_curve_points() {
+        let cubic = [
+            FloatPoint { x: 0.0, y: 0.0 },
+            FloatPoint { x: 0.0, y: 1000.0 },
+            FloatPoint {
+                x: 1000.0,
+                y: 1000.0,
+            },
+            FloatPoint { x: 1000.0, y: 0.0 },
+        ];
+        let outline = DecodedOutline {
+            ops: vec![
+                OutlineOp::MoveTo(Point { x: 0, y: 0 }),
+                OutlineOp::CubicTo {
+                    control1: Point { x: 0, y: 1000 },
+                    control2: Point { x: 1000, y: 1000 },
+                    to: Point { x: 1000, y: 0 },
+                },
+                OutlineOp::Close,
+            ],
+            consumed: 0,
+        };
+        let contours = outline_to_contours(&outline, 1000, 1000).unwrap();
+        assert_eq!(contours.len(), 1);
+        assert!(contours[0].iter().any(|point| !point.on_curve));
+
+        let (glyf, _, point_count, contour_count) = encode_simple_glyph(&contours).unwrap();
+        assert_eq!(contour_count, 1);
+        assert_eq!(point_count as usize, contours[0].len());
+        let flags_offset = 10 + 2 * contour_count as usize + 2;
+        let flags = &glyf[flags_offset..flags_offset + point_count as usize];
+        assert!(flags.iter().any(|flag| flag & 0x01 == 0));
+        assert!(flags.iter().any(|flag| flag & 0x01 != 0));
+
+        let contour = &contours[0];
+        assert_eq!((contour.len() - 1) % 2, 0);
+        let segment_count = (contour.len() - 1) / 2;
+        let point_as_float = |point: SfntPoint| FloatPoint {
+            x: point.x as f64,
+            y: point.y as f64,
+        };
+        let mut from = point_as_float(contour[0]);
+        let mut observed_max = 0.0f64;
+        for index in 0..segment_count {
+            let control = contour[1 + index * 2];
+            let to = contour[2 + index * 2];
+            assert!(!control.on_curve);
+            assert!(to.on_curve);
+            let segment = QuadraticSegment {
+                control: point_as_float(control),
+                to: point_as_float(to),
+            };
+            for sample in 0..=64 {
+                let local_t = sample as f64 / 64.0;
+                let global_t = (index as f64 + local_t) / segment_count as f64;
+                let exact = eval_cubic(cubic, global_t);
+                let approx = eval_quadratic(from, segment, local_t);
+                observed_max = observed_max.max((exact.x - approx.x).hypot(exact.y - approx.y));
+            }
+            from = segment.to;
+        }
+        assert!(
+            observed_max <= CUBIC_QUADRATIC_QUANTIZED_MAX_ERROR + 1e-9,
+            "quantized TrueType error {observed_max} exceeds bound {}",
+            CUBIC_QUADRATIC_QUANTIZED_MAX_ERROR
+        );
+    }
+
+    #[test]
+    fn signed_scaling_rounds_symmetrically() {
+        assert_eq!(scale_i32(1, 2, 1000), 500);
+        assert_eq!(scale_i32(-1, 2, 1000), -500);
+        assert_eq!(scale_i32(1, 3, 1000), 333);
+        assert_eq!(scale_i32(-1, 3, 1000), -333);
     }
 
     #[test]

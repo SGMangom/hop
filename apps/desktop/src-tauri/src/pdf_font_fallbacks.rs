@@ -161,19 +161,10 @@ fn font_family_eq(left: &str, right: &str) -> bool {
 fn normalize_svg_font_family(family: &str) -> String {
     let mut normalized = family.trim();
     loop {
-        let unwrapped = if normalized.len() >= 12
-            && normalized.starts_with("&apos;")
-            && normalized.ends_with("&apos;")
-        {
-            Some(&normalized[6..normalized.len() - 6])
-        } else if normalized.len() >= 12
-            && normalized.starts_with("&quot;")
-            && normalized.ends_with("&quot;")
-        {
-            Some(&normalized[6..normalized.len() - 6])
-        } else {
-            None
-        };
+        let has_entity_quotes = normalized.len() >= 12
+            && ((normalized.starts_with("&apos;") && normalized.ends_with("&apos;"))
+                || (normalized.starts_with("&quot;") && normalized.ends_with("&quot;")));
+        let unwrapped = has_entity_quotes.then(|| &normalized[6..normalized.len() - 6]);
         let Some(unwrapped) = unwrapped else {
             break;
         };
