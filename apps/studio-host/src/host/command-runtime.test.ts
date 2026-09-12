@@ -18,6 +18,17 @@ vi.mock('@/upstream/commands', () => ({
 }));
 vi.mock('@/command/commands/edit', () => ({ editCommands: [] }));
 vi.mock('@/command/commands/file', () => ({ fileCommands: [] }));
+vi.mock('../command/commands/format', () => ({ formatCommands: [] }));
+vi.mock('../command/commands/insert', () => ({ insertCommands: [], installHyperlinkToolbarEntry: vi.fn() }));
+vi.mock('../command/commands/page', () => ({ pageCommands: [] }));
+vi.mock('../command/commands/document-info', () => ({
+  documentInfoCommands: [],
+  installDocumentInfoMenuEntry: vi.fn(),
+}));
+vi.mock('../command/commands/document-statistics', () => ({
+  documentStatisticsCommands: [],
+  installDocumentStatisticsMenuEntry: vi.fn(),
+}));
 
 import { createCommandRuntime } from './command-runtime';
 
@@ -46,7 +57,7 @@ describe('createCommandRuntime', () => {
       isEditable: true,
     });
     expect(runtime.services.gotoPage(4)).toBe(true);
-    expect(registeredGroups).toHaveLength(8);
+    expect(registeredGroups).toHaveLength(10);
   });
 
   it('synchronizes form mode with the input handler, DOM, status, and events', () => {

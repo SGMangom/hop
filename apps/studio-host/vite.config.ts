@@ -10,10 +10,12 @@ const desktopConfig = JSON.parse(
 const upstreamStudioDir = resolve(import.meta.dirname, '../../third_party/rhwp/rhwp-studio');
 const upstreamSrc = resolve(import.meta.dirname, '../../third_party/rhwp/rhwp-studio/src');
 const hopSrc = resolve(import.meta.dirname, 'src');
-const rhwpWasmModule = normalizePath(resolve(import.meta.dirname, 'vendor/rhwp-core/rhwp.js'));
+const rhwpWasmModule = normalizePath(resolve(import.meta.dirname, '../../target-local/rhwp-wasm/rhwp.js'));
 const rhwpWasmDir = dirname(rhwpWasmModule);
-const rhwpWasmPackage = JSON.parse(readFileSync(resolve(rhwpWasmDir, 'package.json'), 'utf-8'));
+const rhwpWasmPackage = JSON.parse(readFileSync(resolve(import.meta.dirname, 'vendor/rhwp-core/package.json'), 'utf-8'));
 const fontAssetsDir = resolve(import.meta.dirname, '../../assets/fonts');
+const computerModernDir = resolve(fontAssetsDir, 'computer-modern');
+const canvasKitPackageDir = resolve(import.meta.dirname, 'node_modules/canvaskit-wasm');
 
 function hopFontAssets(): Plugin {
   return {
@@ -21,19 +23,19 @@ function hopFontAssets(): Plugin {
     configureServer(server) {
       server.middlewares.use('/fonts', (req, res, next) => {
         const fontName = basename(decodePath(req.url?.split('?')[0] ?? ''));
-        if (!fontName.endsWith('.woff2')) {
+        if (!fontName.endsWith('.woff2') && !/^ComputerModern-(Regular|Italic|Bold)\.ttf$/.test(fontName)) {
           next();
           return;
         }
 
-        const fontPath = resolve(fontAssetsDir, fontName);
+        const fontPath = resolve(fontName.endsWith('.ttf') ? computerModernDir : fontAssetsDir, fontName);
         const relativeFontPath = relative(fontAssetsDir, fontPath);
         if (relativeFontPath.startsWith('..') || relativeFontPath === '' || !existsSync(fontPath)) {
           next();
           return;
         }
 
-        res.setHeader('Content-Type', 'font/woff2');
+        res.setHeader('Content-Type', fontName.endsWith('.ttf') ? 'font/ttf' : 'font/woff2');
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         createReadStream(fontPath).pipe(res);
       });
@@ -45,6 +47,10 @@ function hopFontAssets(): Plugin {
         const source = resolve(fontAssetsDir, fileName);
         if (!fileName.endsWith('.woff2') || !statSync(source).isFile()) continue;
         copyFileSync(source, resolve(outDir, fileName));
+      }
+      for (const style of ['Regular', 'Italic', 'Bold']) {
+        const fileName = `ComputerModern-${style}.ttf`;
+        copyFileSync(resolve(computerModernDir, fileName), resolve(outDir, fileName));
       }
     },
   };
@@ -69,6 +75,10 @@ export default defineConfig({
     alias: [
       ...createHopOverrides(hopSrc),
       { find: '@wasm/rhwp.js', replacement: rhwpWasmModule },
+      // The imported renderer lives under third_party, outside this workspace package's
+      // node_modules ancestry. Pin CanvasKit to studio-host's declared dependency so both
+      // the JS API and canvaskit.wasm resolve in dev and production builds.
+      { find: 'canvaskit-wasm', replacement: canvasKitPackageDir },
       { find: '@/upstream', replacement: resolve(hopSrc, 'upstream') },
       { find: '@upstream', replacement: upstreamSrc },
       { find: '@', replacement: upstreamSrc },

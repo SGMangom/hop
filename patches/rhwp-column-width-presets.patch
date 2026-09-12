@@ -1,0 +1,178 @@
+diff --git a/src/document_core/commands/text_editing.rs b/src/document_core/commands/text_editing.rs
+index 24771e7..279e1a4 100644
+--- a/src/document_core/commands/text_editing.rs
++++ b/src/document_core/commands/text_editing.rs
+@@ -3450,6 +3450,90 @@ impl DocumentCore {
+         Ok("{\"ok\":true}".to_string())
+     }
+
++    /// 한컴의 2단 `왼쪽`/`오른쪽` 프리셋을 적용한다.
++    ///
++    /// `narrow_left=true` 이면 왼쪽 단이 좁고 오른쪽 단이 넓으며, false 이면 그 반대다.
++    /// 두 단 사이 간격은 `spacing_hu` 를 그대로 유지하고, 나머지 본문 폭을 1:2로 나눈다.
++    /// HWPX 저장은 절대 HWPUNIT 폭을 요구하므로 `proportional_widths=false` 로 기록한다.
++    /// HWP5 저장 후 재로드 시에는 같은 값들이 비례값으로 읽히지만 폭+간격의 합이 본문 폭과
++    /// 같아서 동일한 기하가 유지된다.
++    pub fn set_two_column_preset_native(
++        &mut self,
++        section_idx: usize,
++        narrow_left: bool,
++        spacing_hu: i16,
++    ) -> Result<String, HwpError> {
++        if spacing_hu < 0 {
++            return Err(HwpError::RenderError(
++                "단 간격은 음수일 수 없습니다".to_string(),
++            ));
++        }
++        let page_def = self
++            .document
++            .sections
++            .get(section_idx)
++            .ok_or_else(|| {
++                HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
++            })?
++            .section_def
++            .page_def
++            .clone();
++        let body_width = crate::model::page::PageAreas::from_page_def(&page_def)
++            .body_area
++            .width();
++        let usable_width = body_width - i32::from(spacing_hu);
++        if usable_width < 3 {
++            return Err(HwpError::RenderError(
++                "본문 폭이 2단 프리셋을 적용하기에 너무 좁습니다".to_string(),
++            ));
++        }
++
++        let narrow_width = usable_width / 3;
++        let wide_width = usable_width - narrow_width;
++        if narrow_width > i16::MAX as i32 || wide_width > i16::MAX as i32 {
++            return Err(HwpError::RenderError(
++                "현재 용지 폭은 개별 단 너비의 HWP 저장 범위를 넘습니다".to_string(),
++            ));
++        }
++        let (left_width, right_width) = if narrow_left {
++            (narrow_width as i16, wide_width as i16)
++        } else {
++            (wide_width as i16, narrow_width as i16)
++        };
++
++        // 기존 생성/탐색 계약을 재사용한 뒤 개별 폭만 채운다. 명시 프리셋이므로 원본 attr 은
++        // 버려 serializer 가 same_width=false/column_count=2 를 현재 IR에서 재구성하게 한다.
++        self.set_column_def_native(section_idx, 2, 0, false, spacing_hu)?;
++        {
++            let section = &mut self.document.sections[section_idx];
++            let column_def = section
++                .paragraphs
++                .iter_mut()
++                .flat_map(|para| para.controls.iter_mut())
++                .find_map(|ctrl| match ctrl {
++                    Control::ColumnDef(cd) => Some(cd),
++                    _ => None,
++                })
++                .ok_or_else(|| {
++                    HwpError::RenderError("2단 프리셋용 ColumnDef 생성에 실패했습니다".to_string())
++                })?;
++            column_def.column_count = 2;
++            column_def.same_width = false;
++            column_def.spacing = spacing_hu;
++            column_def.widths = vec![left_width, right_width];
++            column_def.gaps = vec![spacing_hu, 0];
++            column_def.proportional_widths = false;
++            column_def.raw_attr = 0;
++            section.raw_stream = None;
++        }
++        self.rebuild_section(section_idx);
++
++        Ok(format!(
++            "{{\"ok\":true,\"leftWidth\":{},\"rightWidth\":{},\"spacing\":{}}}",
++            left_width, right_width, spacing_hu
++        ))
++    }
++
+     /// 문단 병합 (네이티브 에러 타입)
+     pub fn merge_paragraph_native(
+         &mut self,
+@@ -5511,6 +5595,56 @@ mod tests {
+     use crate::document_core::helpers::removed_para_meta_of;
+     use crate::model::paragraph::{CharShapeRef, ColumnBreakType, NumberingRestart};
+
++    #[test]
++    fn two_column_left_right_presets_are_mirrored_and_roundtrip() {
++        let mut core = DocumentCore::new_empty();
++        core.create_blank_document_native().unwrap();
++        let spacing = 2268i16;
++
++        let left_result = core
++            .set_two_column_preset_native(0, true, spacing)
++            .expect("left preset");
++        assert!(left_result.contains("\"ok\":true"));
++        let left = DocumentCore::find_initial_column_def(&core.document.sections[0].paragraphs);
++        assert_eq!(left.column_count, 2);
++        assert!(!left.same_width);
++        assert_eq!(left.gaps, vec![spacing, 0]);
++        assert!(!left.proportional_widths);
++        assert_eq!(left.widths.len(), 2);
++        assert!(left.widths[0] < left.widths[1], "왼쪽 프리셋은 왼쪽 단이 좁아야 함");
++        let left_widths = left.widths.clone();
++
++        core.set_two_column_preset_native(0, false, spacing)
++            .expect("right preset");
++        let right = DocumentCore::find_initial_column_def(&core.document.sections[0].paragraphs);
++        assert_eq!(right.widths, vec![left_widths[1], left_widths[0]]);
++        assert_eq!(right.gaps, vec![spacing, 0]);
++        assert!(right.widths[0] > right.widths[1], "오른쪽 프리셋은 오른쪽 단이 좁아야 함");
++
++        // 왼쪽 프리셋을 저장 기준으로 고정하고 HWP/HWPX 양쪽 왕복을 확인한다.
++        core.set_two_column_preset_native(0, true, spacing)
++            .expect("left preset again");
++        let expected = DocumentCore::find_initial_column_def(&core.document.sections[0].paragraphs);
++
++        let hwp = core.export_hwp_with_adapter_snapshot().expect("export hwp");
++        let reopened_hwp = DocumentCore::from_bytes(&hwp).expect("reopen hwp");
++        let hwp_columns = DocumentCore::find_initial_column_def(
++            &reopened_hwp.document.sections[0].paragraphs,
++        );
++        assert_eq!(hwp_columns.widths, expected.widths);
++        assert_eq!(hwp_columns.gaps, expected.gaps);
++        assert!(hwp_columns.proportional_widths, "HWP5 unequal columns parse as proportional values");
++
++        let hwpx = core.export_hwpx_native().expect("export hwpx");
++        let reopened_hwpx = DocumentCore::from_bytes(&hwpx).expect("reopen hwpx");
++        let hwpx_columns = DocumentCore::find_initial_column_def(
++            &reopened_hwpx.document.sections[0].paragraphs,
++        );
++        assert_eq!(hwpx_columns.widths, expected.widths);
++        assert_eq!(hwpx_columns.gaps, expected.gaps);
++        assert!(!hwpx_columns.proportional_widths, "HWPX unequal columns keep absolute HWPUNIT widths");
++    }
++
+     #[test]
+     fn issue3137_focused_geometry_requires_verified_page_tree_patch() {
+         let patch = FocusedPageTreePatch {
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+index 006e448..fda0cf5 100644
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -2332,6 +2332,21 @@ impl HwpDocument {
+         .map_err(|e| e.into())
+     }
+
++    /// 한컴식 2단 `왼쪽`/`오른쪽` 프리셋.
++    /// `narrow_left=true` 이면 왼쪽 단이 좁고, false 이면 오른쪽 단이 좁다.
++    #[wasm_bindgen(js_name = setTwoColumnPreset)]
++    pub fn set_two_column_preset(
++        &mut self,
++        section_idx: u32,
++        narrow_left: bool,
++        spacing_hu: u32,
++    ) -> Result<String, JsValue> {
++        let spacing_hu = i16::try_from(spacing_hu)
++            .map_err(|_| JsValue::from_str("단 간격이 HWP 저장 범위를 넘습니다"))?;
++        self.set_two_column_preset_native(section_idx as usize, narrow_left, spacing_hu)
++            .map_err(|e| e.into())
++    }
++
+     /// 현재 문단을 이전 문단에 병합한다 (Backspace at start).
+     ///
+     /// para_idx의 텍스트가 para_idx-1에 결합되고 para_idx는 삭제된다.

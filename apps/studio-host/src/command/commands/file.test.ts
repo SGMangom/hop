@@ -182,12 +182,32 @@ describe('file command desktop overrides', () => {
     expect(command('file:export-pdf').shortcutLabel).toBeUndefined();
   });
 
-  it('does not auto-adopt browser-only save and PDF commands', () => {
-    expect(fileCommands.map(({ id }) => id)).not.toEqual(expect.arrayContaining([
+  it('adopts native HWP/HWPX save-as commands but keeps browser PDF export out', () => {
+    expect(fileCommands.map(({ id }) => id)).toEqual(expect.arrayContaining([
       'file:save-as-hwp',
       'file:save-as-hwpx',
-      'file:print-to-pdf',
     ]));
+    expect(fileCommands.map(({ id }) => id)).not.toContain('file:print-to-pdf');
+  });
+
+  it('routes explicit HWPX save-as through the desktop format operation', async () => {
+    const result = {
+      docId: 'doc-1',
+      sourcePath: '/tmp/copy.hwpx',
+      format: 'hwpx',
+      revision: 4,
+      dirty: false,
+      warnings: [],
+    };
+    const eventBus = { emit: vi.fn() };
+    const saveDocumentAsFormatFromCommand = vi.fn().mockResolvedValue(result);
+    const wasm = desktopBridge({ saveDocumentAsFormatFromCommand });
+
+    await command('file:save-as-hwpx').execute(services({ wasm, eventBus }) as never);
+
+    expect(saveDocumentAsFormatFromCommand).toHaveBeenCalledWith('hwpx');
+    expect(eventBus.emit).toHaveBeenCalledWith('desktop-document-saved', result);
+    expect(eventBus.emit).toHaveBeenCalledWith('desktop-status', '저장 완료');
   });
 
   it('opens a selected recent document through the desktop bridge', async () => {
@@ -263,6 +283,7 @@ function desktopBridge(overrides: Record<string, unknown>) {
     createNewWindow: vi.fn(),
     saveDocumentFromCommand: vi.fn(),
     saveDocumentAsFromCommand: vi.fn(),
+    saveDocumentAsFormatFromCommand: vi.fn(),
     exportPdfFromCommand: vi.fn(),
     printCurrentWebview: vi.fn(),
     ...overrides,

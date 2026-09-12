@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 const RESTRICTED_SERIF_FONTS: &[&str] = &["휴먼명조", "HY견명조", "HYMyeongJo-Extra", "HY신명조"];
 const RESTRICTED_SANS_FONTS: &[&str] = &[
     "휴먼고딕",
@@ -19,11 +21,11 @@ const RESTRICTED_SANS_FONTS: &[&str] = &[
 const SERIF_FALLBACK: &str = "함초롬바탕, 바탕, AppleMyungjo, serif";
 const SANS_FALLBACK: &str = "함초롬돋움, 맑은 고딕, Apple SD Gothic Neo, sans-serif";
 
-pub(crate) fn add_font_fallbacks(svg: &str) -> String {
-    rewrite_font_family_attrs(svg)
+pub(crate) fn add_font_fallbacks(svg: &str, exact_hft_fonts: &BTreeMap<String, String>) -> String {
+    rewrite_font_family_attrs(svg, exact_hft_fonts)
 }
 
-fn rewrite_font_family_attrs(svg: &str) -> String {
+fn rewrite_font_family_attrs(svg: &str, exact_hft_fonts: &BTreeMap<String, String>) -> String {
     const MARKER: &str = "font-family=\"";
 
     let mut output = String::with_capacity(svg.len());
@@ -39,7 +41,10 @@ fn rewrite_font_family_attrs(svg: &str) -> String {
             return output;
         };
 
-        output.push_str(&sanitize_svg_font_family(&value_and_tail[..value_end]));
+        output.push_str(&sanitize_svg_font_family(
+            &value_and_tail[..value_end],
+            exact_hft_fonts,
+        ));
         rest = &value_and_tail[value_end..];
     }
 
@@ -47,22 +52,27 @@ fn rewrite_font_family_attrs(svg: &str) -> String {
     output
 }
 
-fn sanitize_svg_font_family(value: &str) -> String {
-    let families = split_svg_font_family(value);
+fn sanitize_svg_font_family(value: &str, exact_hft_fonts: &BTreeMap<String, String>) -> String {
+    let original_families = split_svg_font_family(value);
+    let families = original_families
+        .into_iter()
+        .map(|family| canonical_exact_hft_family(&family, exact_hft_fonts).unwrap_or(family))
+        .collect::<Vec<_>>();
+    let canonicalized_exact_family = families != split_svg_font_family(value);
     let Some(first) = families.first() else {
         return value.to_string();
     };
 
-    if is_restricted_serif_font(first) {
+    if is_restricted_serif_font(first) && !has_exact_hft_font(first, exact_hft_fonts) {
         return SERIF_FALLBACK.to_string();
     }
-    if is_restricted_sans_font(first) {
+    if is_restricted_sans_font(first) && !has_exact_hft_font(first, exact_hft_fonts) {
         return SANS_FALLBACK.to_string();
     }
 
     let safe_families = families
         .iter()
-        .filter(|family| !is_restricted_font(family))
+        .filter(|family| !is_restricted_font(family) || has_exact_hft_font(family, exact_hft_fonts))
         .cloned()
         .collect::<Vec<_>>();
     let removed_restricted_families = safe_families.len() != families.len();
@@ -82,8 +92,25 @@ fn sanitize_svg_font_family(value: &str) -> String {
     if removed_restricted_families {
         return safe_families.join(", ");
     }
+    if canonicalized_exact_family {
+        return safe_families.join(", ");
+    }
 
     value.to_string()
+}
+
+fn canonical_exact_hft_family(
+    family: &str,
+    exact_hft_fonts: &BTreeMap<String, String>,
+) -> Option<String> {
+    let normalized = normalize_svg_font_family(family);
+    exact_hft_fonts
+        .get(&crate::font_catalog::font_family_alias_key(&normalized))
+        .cloned()
+}
+
+fn has_exact_hft_font(family: &str, exact_hft_fonts: &BTreeMap<String, String>) -> bool {
+    canonical_exact_hft_family(family, exact_hft_fonts).is_some()
 }
 
 fn is_restricted_font(family: &str) -> bool {
@@ -132,8 +159,27 @@ fn font_family_eq(left: &str, right: &str) -> bool {
 }
 
 fn normalize_svg_font_family(family: &str) -> String {
-    family
-        .trim()
+    let mut normalized = family.trim();
+    loop {
+        let unwrapped = if normalized.len() >= 12
+            && normalized.starts_with("&apos;")
+            && normalized.ends_with("&apos;")
+        {
+            Some(&normalized[6..normalized.len() - 6])
+        } else if normalized.len() >= 12
+            && normalized.starts_with("&quot;")
+            && normalized.ends_with("&quot;")
+        {
+            Some(&normalized[6..normalized.len() - 6])
+        } else {
+            None
+        };
+        let Some(unwrapped) = unwrapped else {
+            break;
+        };
+        normalized = unwrapped.trim();
+    }
+    normalized
         .trim_matches(|ch| ch == '\'' || ch == '"')
         .to_string()
 }
@@ -146,7 +192,7 @@ mod tests {
     fn add_font_fallbacks_replaces_restricted_font_families() {
         let svg = r#"<text font-family="휴먼명조">A</text><text font-family="HY헤드라인M, sans-serif">B</text>"#;
 
-        let result = add_font_fallbacks(svg);
+        let result = add_font_fallbacks(svg, &BTreeMap::new());
 
         assert!(result.contains(r#"font-family="함초롬바탕, 바탕, AppleMyungjo, serif""#));
         assert!(result
@@ -159,12 +205,65 @@ mod tests {
     fn add_font_fallbacks_does_not_duplicate_existing_safe_fallbacks() {
         let svg = r#"<text font-family="바탕체, 바탕, HY신명조, serif">A</text><text font-family="'HCI Poppy', sans-serif">B</text>"#;
 
-        let result = add_font_fallbacks(svg);
+        let result = add_font_fallbacks(svg, &BTreeMap::new());
 
         assert!(result.contains(r#"font-family="바탕체, AppleMyungjo, 바탕, serif""#));
         assert!(result
             .contains(r#"font-family="함초롬돋움, 맑은 고딕, Apple SD Gothic Neo, sans-serif""#));
         assert!(!result.contains("HY신명조"));
         assert!(!result.contains("HCI Poppy"));
+    }
+
+    #[test]
+    fn add_font_fallbacks_handles_searchable_svg_xml_escaped_family_names() {
+        let svg = r#"<text font-family="&apos;HY신명조&apos;,&apos;Batang&apos;,serif">A</text><text font-family="&quot;HY헤드라인M&quot;,sans-serif">B</text>"#;
+
+        let result = add_font_fallbacks(svg, &BTreeMap::new());
+
+        assert!(result.contains(r#"font-family="함초롬바탕, 바탕, AppleMyungjo, serif""#));
+        assert!(result
+            .contains(r#"font-family="함초롬돋움, 맑은 고딕, Apple SD Gothic Neo, sans-serif""#));
+        assert!(!result.contains("HY신명조"));
+        assert!(!result.contains("HY헤드라인M"));
+    }
+
+    #[test]
+    fn add_font_fallbacks_canonicalizes_xml_escaped_exact_hft_family() {
+        let svg = r#"<text font-family="&apos;HY신명조&apos;,&apos;Batang&apos;,serif">A</text>"#;
+        let exact = [(
+            crate::font_catalog::font_family_alias_key("HY신명조"),
+            "한양신명조".to_string(),
+        )]
+        .into_iter()
+        .collect();
+
+        let result = add_font_fallbacks(svg, &exact);
+
+        assert!(result.contains(r#"font-family="한양신명조, &apos;Batang&apos;, serif""#));
+        assert!(!result.contains("함초롬바탕"));
+    }
+
+    #[test]
+    fn add_font_fallbacks_preserves_restricted_family_when_exact_derived_face_exists() {
+        let svg = r#"<text font-family="HCI Poppy, sans-serif">A</text><text font-family="HY신명조">B</text>"#;
+        let exact = [
+            (
+                crate::font_catalog::font_family_alias_key("HCIPoppy"),
+                "HCIPoppy".to_string(),
+            ),
+            (
+                crate::font_catalog::font_family_alias_key("HY신명조"),
+                "한양신명조".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let result = add_font_fallbacks(svg, &exact);
+
+        assert!(result.contains(r#"font-family="HCIPoppy, sans-serif""#));
+        assert!(result.contains(r#"font-family="한양신명조""#));
+        assert!(!result.contains("함초롬돋움"));
+        assert!(!result.contains("함초롬바탕"));
     }
 }

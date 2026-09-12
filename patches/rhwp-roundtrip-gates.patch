@@ -1,0 +1,481 @@
+diff --git a/src/serializer/hwpx/roundtrip.rs b/src/serializer/hwpx/roundtrip.rs
+--- a/src/serializer/hwpx/roundtrip.rs
++++ b/src/serializer/hwpx/roundtrip.rs
+@@ -196,6 +196,17 @@
+         path: String,
+         detail: String,
+     },
++    /// 수식 전용 의미 필드 불일치 — 스크립트/서식/lineMode 보존 게이트 (HOP).
++    ///
++    /// `attr`/`eqedit` 는 HWPX 가 표현할 수 있는 bit 0(lineMode)와 나머지 비트를
++    /// 분리해 기록한다. 같은 포맷 왕복은 전체 비트를 검사하되 cross-format 필터는
++    /// HWPX 에 자리가 없는 extra bits 만 제거할 수 있다.
++    EquationContent {
++        section: usize,
++        paragraph: usize,
++        path: String,
++        detail: String,
++    },
+     /// 필드 parameters / MEMO 본문 불일치 — 필드 보존 게이트 (#1391).
+     ///
+     /// `path` 는 `…field` (parameters) 또는 `…field.memo.p[k]` (본문 재귀).
+@@ -356,6 +367,16 @@
+             } => write!(
+                 f,
+                 "section[{}] paragraph[{}]{} comment: {}",
++                section, paragraph, path, detail
++            ),
++            EquationContent {
++                section,
++                paragraph,
++                path,
++                detail,
++            } => write!(
++                f,
++                "section[{}] paragraph[{}]{} equation: {}",
+                 section, paragraph, path, detail
+             ),
+             FieldContent {
+@@ -455,9 +476,184 @@
+         None
+     } else {
+         Some(format!("expected={:?} actual={:?}", a, b))
++    }
++}
++
++fn diff_equation_content(
++    a: &crate::model::control::Equation,
++    b: &crate::model::control::Equation,
++) -> Vec<String> {
++    use crate::model::control::EQUATION_LINE_MODE_BIT;
++
++    let mut parts = Vec::new();
++    if a.script != b.script {
++        parts.push(format!(
++            "script: expected={:?} actual={:?}",
++            a.script, b.script
++        ));
++    }
++    if a.font_size != b.font_size {
++        parts.push(format!(
++            "font_size: expected={} actual={}",
++            a.font_size, b.font_size
++        ));
++    }
++    if a.color != b.color {
++        parts.push(format!(
++            "color: expected=0x{:08X} actual=0x{:08X}",
++            a.color, b.color
++        ));
++    }
++    if a.baseline != b.baseline {
++        parts.push(format!(
++            "baseline: expected={} actual={}",
++            a.baseline, b.baseline
++        ));
++    }
++
++    // HWPX has a direct representation only for bit 0 (lineMode). Split the comparison so
++    // same-format HWP5 roundtrips still verify every preserved bit while cross-format callers
++    // can discard only the representation-specific remainder without hiding lineMode loss.
++    let attr_line_a = a.attr & EQUATION_LINE_MODE_BIT;
++    let attr_line_b = b.attr & EQUATION_LINE_MODE_BIT;
++    if attr_line_a != attr_line_b {
++        parts.push(format!(
++            "attr.line_mode: expected={} actual={}",
++            attr_line_a != 0,
++            attr_line_b != 0
++        ));
++    }
++    let attr_extra_a = a.attr & !EQUATION_LINE_MODE_BIT;
++    let attr_extra_b = b.attr & !EQUATION_LINE_MODE_BIT;
++    if attr_extra_a != attr_extra_b {
++        parts.push(format!(
++            "attr.extra_bits: expected=0x{:08X} actual=0x{:08X}",
++            attr_extra_a, attr_extra_b
++        ));
++    }
++
++    let eqedit_line_a = a.eqedit & EQUATION_LINE_MODE_BIT;
++    let eqedit_line_b = b.eqedit & EQUATION_LINE_MODE_BIT;
++    if eqedit_line_a != eqedit_line_b {
++        parts.push(format!(
++            "eqedit.line_mode: expected={} actual={}",
++            eqedit_line_a != 0,
++            eqedit_line_b != 0
++        ));
++    }
++    let eqedit_extra_a = a.eqedit & !EQUATION_LINE_MODE_BIT;
++    let eqedit_extra_b = b.eqedit & !EQUATION_LINE_MODE_BIT;
++    if eqedit_extra_a != eqedit_extra_b {
++        parts.push(format!(
++            "eqedit.extra_bits: expected=0x{:08X} actual=0x{:08X}",
++            eqedit_extra_a, eqedit_extra_b
++        ));
++    }
++
++    if a.font_name != b.font_name {
++        parts.push(format!(
++            "font_name: expected={:?} actual={:?}",
++            a.font_name, b.font_name
++        ));
++    }
++    if a.version_info != b.version_info {
++        parts.push(format!(
++            "version_info: expected={:?} actual={:?}",
++            a.version_info, b.version_info
++        ));
+     }
++    parts
+ }
+
++fn diff_field_content(
++    a: &crate::model::control::Field,
++    b: &crate::model::control::Field,
++) -> Vec<String> {
++    // Only these two bits have a direct HWPX fieldBegin representation (`editable`, `dirty`).
++    // Keep the remaining bits as a separate same-format gate so the cross-format filter can
++    // discard only representation noise rather than the whole properties comparison.
++    const HWPX_PROPERTY_MASK: u32 = 1 | (1 << 15);
++
++    let mut parts = Vec::new();
++    if a.field_type != b.field_type {
++        parts.push(format!(
++            "field_type: expected={:?} actual={:?}",
++            a.field_type, b.field_type
++        ));
++    }
++    if a.command != b.command {
++        parts.push(format!(
++            "command: expected={:?} actual={:?}",
++            a.command, b.command
++        ));
++    }
++    let properties_semantic_a = a.properties & HWPX_PROPERTY_MASK;
++    let properties_semantic_b = b.properties & HWPX_PROPERTY_MASK;
++    if properties_semantic_a != properties_semantic_b {
++        parts.push(format!(
++            "properties.semantic: expected=0x{:08X} actual=0x{:08X}",
++            properties_semantic_a, properties_semantic_b
++        ));
++    }
++    let properties_extra_a = a.properties & !HWPX_PROPERTY_MASK;
++    let properties_extra_b = b.properties & !HWPX_PROPERTY_MASK;
++    if properties_extra_a != properties_extra_b {
++        parts.push(format!(
++            "properties.extra_bits: expected=0x{:08X} actual=0x{:08X}",
++            properties_extra_a, properties_extra_b
++        ));
++    }
++    if a.extra_properties != b.extra_properties {
++        parts.push(format!(
++            "extra_properties: expected=0x{:02X} actual=0x{:02X}",
++            a.extra_properties, b.extra_properties
++        ));
++    }
++    if a.field_id != b.field_id {
++        parts.push(format!(
++            "field_id: expected={} actual={}",
++            a.field_id, b.field_id
++        ));
++    }
++    if a.ctrl_id != b.ctrl_id {
++        parts.push(format!(
++            "ctrl_id: expected=0x{:08X} actual=0x{:08X}",
++            a.ctrl_id, b.ctrl_id
++        ));
++    }
++    if a.instance_id != b.instance_id {
++        parts.push(format!(
++            "instance_id: expected={:?} actual={:?}",
++            a.instance_id, b.instance_id
++        ));
++    }
++    if a.ctrl_data_name != b.ctrl_data_name {
++        parts.push(format!(
++            "ctrl_data_name: expected={:?} actual={:?}",
++            a.ctrl_data_name, b.ctrl_data_name
++        ));
++    }
++    if a.memo_index != b.memo_index {
++        parts.push(format!(
++            "memo_index: expected={} actual={}",
++            a.memo_index, b.memo_index
++        ));
++    }
++    if a.memo_text_direction != b.memo_text_direction {
++        parts.push(format!(
++            "memo_text_direction: expected={:?} actual={:?}",
++            a.memo_text_direction, b.memo_text_direction
++        ));
++    }
++    if a.parameters != b.parameters {
++        parts.push(format!(
++            "parameters.semantic: expected={:?} actual={:?}",
++            a.parameters, b.parameters
++        ));
++    }
++    parts
++}
++
+ /// 두 개체의 `prevent_page_break`(holdAnchorAndSO) 비교 (#1594). 다르면 detail, 같으면 None.
+ fn diff_hold_anchor(
+     a: &crate::model::shape::CommonObjAttr,
+@@ -544,9 +740,28 @@
+
+ fn is_cross_format_incomparable(d: &IrDifference) -> bool {
+     match d {
+-        // HWPX verbatim parameters 소실 — 대상 포맷에 자리가 없다.
++        // HWPX equation 은 attr/eqedit 의 lineMode(bit 0)만 표현한다. 나머지 HWP5
++        // EQEDIT 비트는 같은 포맷 왕복에서는 보존 대상이지만 포맷 변환에선 비교 불능이다.
++        IrDifference::EquationContent { detail, .. } => {
++            detail.starts_with("attr.extra_bits:") || detail.starts_with("eqedit.extra_bits:")
++        }
++        // HWPX verbatim/semantic parameters 및 HWPX-only field metadata 는 HWP5 에
++        // 동등한 슬롯이 없다. command/memo_index/field_type/field_id/ctrl_id와 HWPX 가
++        // 직접 표현하는 properties bits는 필터링하지 않아 실제 의미 손실을 계속 잡는다.
+         IrDifference::FieldContent { detail, .. } => {
+-            detail.contains("parameters:") && detail.contains("actual=None")
++            (detail.contains("parameters:") && detail.contains("actual=None"))
++                || detail.starts_with("parameters.semantic:")
++                || detail.starts_with("properties.extra_bits:")
++                || detail.starts_with("extra_properties:")
++                || detail.starts_with("instance_id:")
++                || detail.starts_with("ctrl_data_name:")
++                || detail.starts_with("memo_text_direction:")
++                // HWPX MEMO is intentionally lowered to the legacy HWP5 unknown-field
++                // control id by the existing serializer contract. Keep this exact known
++                // representation transition out of cross-format results without hiding
++                // any other field_type/ctrl_id mismatch.
++                || detail == "field_type: expected=Memo actual=Unknown"
++                || detail == "ctrl_id: expected=0x25256D65 actual=0x25756E6B"
+         }
+         // 원본이 값을 안 가진 imgDim 만 — 다른 크기 필드가 섞여 있으면 남긴다.
+         IrDifference::PictureSize { detail, .. } => {
+@@ -1227,6 +1442,14 @@
+             // 수식 설명 비교 (#1392) — equation 은 본문 텍스트 비교 대상이 아니므로
+             // description 만 동승.
+             (Control::Equation(ea), Control::Equation(eb)) => {
++                for detail in diff_equation_content(ea, eb) {
++                    diff.push(IrDifference::EquationContent {
++                        section,
++                        paragraph,
++                        path: format!("{path}/ctrl[{ci}]eq"),
++                        detail,
++                    });
++                }
+                 if let Some(detail) =
+                     diff_object_comment(&ea.common.description, &eb.common.description)
+                 {
+@@ -1272,8 +1495,16 @@
+                     diff_paragraph_char_shapes(diff, section, paragraph, &p, qa, qb);
+                 }
+             }
+-            // 필드 parameters / MEMO 본문 비교 (#1391).
++            // 필드 metadata / parameters / MEMO 본문 비교 (#1391 + HOP roundtrip gate).
+             (Control::Field(fa), Control::Field(fb)) => {
++                for detail in diff_field_content(fa, fb) {
++                    diff.push(IrDifference::FieldContent {
++                        section,
++                        paragraph,
++                        path: format!("{path}/ctrl[{ci}]field"),
++                        detail,
++                    });
++                }
+                 if fa.raw_parameters_xml != fb.raw_parameters_xml {
+                     diff.push(IrDifference::FieldContent {
+                         section,
+@@ -1304,6 +1535,17 @@
+                     .enumerate()
+                 {
+                     let p = format!("{path}/ctrl[{ci}]field.memo.p[{k}]");
++                    if qa.text != qb.text {
++                        diff.push(IrDifference::FieldContent {
++                            section,
++                            paragraph,
++                            path: p.clone(),
++                            detail: format!(
++                                "memo_text: expected={:?} actual={:?}",
++                                qa.text, qb.text
++                            ),
++                        });
++                    }
+                     diff_paragraph_char_shapes(diff, section, paragraph, &p, qa, qb);
+                 }
+             }
+@@ -2766,8 +3008,175 @@
+         let doc2 = parse_hwpx(&out).expect("reparse");
+         let diff = diff_documents(&doc1, &doc2);
+         assert!(diff.is_empty(), "{:?}", diff.differences);
++    }
++
++    #[test]
++    fn hop_equation_semantic_fields_are_not_false_green() {
++        let mut ea = crate::model::control::Equation::default();
++        ea.script = "a over b".to_string();
++        ea.font_size = 1200;
++        ea.color = 0x0012_3456;
++        ea.baseline = 73;
++        ea.attr = 0x0000_0005;
++        ea.eqedit = 0x0000_0009;
++        ea.font_name = "HYhwpEQ".to_string();
++        ea.version_info = "Equation Version 60".to_string();
++        let eb = crate::model::control::Equation::default();
++        let a = doc_with_control(crate::model::control::Control::Equation(Box::new(ea)));
++        let b = doc_with_control(crate::model::control::Control::Equation(Box::new(eb)));
++
++        let diff = diff_documents(&a, &b);
++        let details = diff
++            .differences
++            .iter()
++            .filter_map(|d| match d {
++                IrDifference::EquationContent { path, detail, .. } => {
++                    assert_eq!(path, "/ctrl[0]eq");
++                    Some(detail.as_str())
++                }
++                _ => None,
++            })
++            .collect::<Vec<_>>();
++        for prefix in [
++            "script:",
++            "font_size:",
++            "color:",
++            "baseline:",
++            "attr.line_mode:",
++            "attr.extra_bits:",
++            "eqedit.line_mode:",
++            "eqedit.extra_bits:",
++            "font_name:",
++            "version_info:",
++        ] {
++            assert!(
++                details.iter().any(|detail| detail.starts_with(prefix)),
++                "missing {prefix} in {details:?}"
++            );
++        }
++    }
++
++    #[test]
++    fn hop_field_semantic_fields_and_memo_text_are_not_false_green() {
++        use crate::model::control::{Field, FieldType, Parameter, ParameterList};
++
++        let mut fa = Field::default();
++        fa.field_type = FieldType::ClickHere;
++        fa.command = "Clickhere:set:1:x".to_string();
++        fa.properties = 0x0000_8021;
++        fa.extra_properties = 0x09;
++        fa.field_id = 41;
++        fa.ctrl_id = crate::parser::tags::FIELD_CLICKHERE;
++        fa.instance_id = Some(77);
++        fa.ctrl_data_name = Some("field-name".to_string());
++        fa.memo_index = 3;
++        fa.memo_text_direction = Some("VERTICAL".to_string());
++        fa.parameters = ParameterList {
++            name: Some(String::new()),
++            items: vec![Parameter::String {
++                name: Some("Command".to_string()),
++                value: "payload".to_string(),
++                preserve_space: false,
++            }],
++        };
++        let mut memo_a = Paragraph::default();
++        memo_a.text = "memo-a".to_string();
++        fa.memo_paragraphs.push(memo_a);
++
++        let mut fb = Field::default();
++        let mut memo_b = Paragraph::default();
++        memo_b.text = "memo-b".to_string();
++        fb.memo_paragraphs.push(memo_b);
++
++        let a = doc_with_control(crate::model::control::Control::Field(fa));
++        let b = doc_with_control(crate::model::control::Control::Field(fb));
++        let diff = diff_documents(&a, &b);
++        let details = diff
++            .differences
++            .iter()
++            .filter_map(|d| match d {
++                IrDifference::FieldContent { detail, .. } => Some(detail.as_str()),
++                _ => None,
++            })
++            .collect::<Vec<_>>();
++        for prefix in [
++            "field_type:",
++            "command:",
++            "properties.semantic:",
++            "properties.extra_bits:",
++            "extra_properties:",
++            "field_id:",
++            "ctrl_id:",
++            "instance_id:",
++            "ctrl_data_name:",
++            "memo_index:",
++            "memo_text_direction:",
++            "parameters.semantic:",
++            "memo_text:",
++        ] {
++            assert!(
++                details.iter().any(|detail| detail.starts_with(prefix)),
++                "missing {prefix} in {details:?}"
++            );
++        }
+     }
+
++    #[test]
++    fn hop_cross_format_noise_keeps_comparable_equation_and_field_semantics() {
++        let mk_eq = |detail: &str| IrDifference::EquationContent {
++            section: 0,
++            paragraph: 0,
++            path: "/ctrl[0]eq".to_string(),
++            detail: detail.to_string(),
++        };
++        let mk_field = |detail: &str| IrDifference::FieldContent {
++            section: 0,
++            paragraph: 0,
++            path: "/ctrl[1]field".to_string(),
++            detail: detail.to_string(),
++        };
++        let diff = IrDiff {
++            differences: vec![
++                mk_eq("attr.extra_bits: expected=0x00000004 actual=0x00000000"),
++                mk_eq("eqedit.extra_bits: expected=0x00000008 actual=0x00000000"),
++                mk_eq("attr.line_mode: expected=true actual=false"),
++                mk_eq("script: expected=\"x\" actual=\"\""),
++                mk_field("parameters.semantic: expected=x actual=y"),
++                mk_field("properties.extra_bits: expected=0x20 actual=0x00"),
++                mk_field("instance_id: expected=Some(1) actual=None"),
++                mk_field("memo_text_direction: expected=Some(\"VERTICAL\") actual=None"),
++                mk_field("field_type: expected=Memo actual=Unknown"),
++                mk_field("ctrl_id: expected=0x25256D65 actual=0x25756E6B"),
++                mk_field("field_type: expected=Formula actual=Unknown"),
++                mk_field("ctrl_id: expected=0x2525666D actual=0x00000000"),
++                mk_field("command: expected=\"x\" actual=\"\""),
++            ],
++        };
++
++        let filtered = strip_cross_format_noise(diff);
++        let details = filtered
++            .differences
++            .iter()
++            .map(|d| d.to_string())
++            .collect::<Vec<_>>();
++        assert_eq!(details.len(), 5, "{details:?}");
++        assert!(details.iter().any(|d| d.contains("attr.line_mode:")));
++        assert!(details.iter().any(|d| d.contains("script:")));
++        assert!(details
++            .iter()
++            .any(|d| d.contains("field_type: expected=Formula actual=Unknown")));
++        assert!(details
++            .iter()
++            .any(|d| d.contains("ctrl_id: expected=0x2525666D actual=0x00000000")));
++        assert!(details.iter().any(|d| d.contains("command:")));
++        assert!(!details
++            .iter()
++            .any(|d| d.contains("expected=Memo actual=Unknown")));
++        assert!(!details
++            .iter()
++            .any(|d| d.contains("0x25256D65 actual=0x25756E6B")));
++    }
++
+     // ---------- #1389: 그림 크기 요소 게이트 동승 ----------
+
+     #[test]

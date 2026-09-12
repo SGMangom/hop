@@ -1,0 +1,441 @@
+--- a/src/parser/body_text.rs
++++ b/src/parser/body_text.rs
+@@ -19,7 +19,7 @@
+ use super::record::Record;
+ use super::tags;
+
+-use crate::model::control::{Control, UnknownControl};
++use crate::model::control::{Control, FieldType, UnknownControl};
+ use crate::model::document::{RawRecord, Section, SectionDef};
+ use crate::model::footnote::FootnoteShape;
+ use crate::model::header_footer::{HeaderFooterApply, MasterPage};
+@@ -69,6 +69,7 @@
+             }
+
+             let para_records = &records[start..idx];
++            let memo_lists = parse_hwp5_memo_tail(para_records, base_level);
+             let paragraph = parse_paragraph(para_records)?;
+
+             // 구역 정의 추출
+@@ -78,7 +79,19 @@
+                 }
+             }
+
+-            section.paragraphs.push(paragraph);
++            // HWP5 MEMO_LIST는 마지막 본문 뒤 synthetic root paragraph 아래에 붙는다.
++            // 그 root는 사용자 본문이 아니므로 본문 목록에 넣지 않되, 실제 텍스트/컨트롤을
++            // 가진 host에 MEMO_LIST가 붙은 변형은 보존한다.
++            let synthetic_memo_host = !memo_lists.is_empty()
++                && !paragraph.has_para_text
++                && paragraph.text.is_empty()
++                && paragraph.controls.is_empty();
++            if !synthetic_memo_host {
++                section.paragraphs.push(paragraph);
++            }
++            for memo in memo_lists {
++                attach_hwp5_memo(&mut section, memo);
++            }
+         } else {
+             idx += 1;
+         }
+@@ -100,6 +113,7 @@
+             while scan < all_records.len() {
+                 if all_records[scan].tag_id == tags::HWPTAG_LIST_HEADER
+                     && all_records[scan].level == 1
++                    && !is_hwp5_memo_list_header(&all_records, scan)
+                 {
+                     // 확장 바탕쪽 발견
+                     let tail: Vec<RawRecord> = all_records[scan..]
+@@ -122,6 +136,155 @@
+     Ok(section)
+ }
+
++#[derive(Debug)]
++struct Hwp5MemoTail {
++    memo_index: u32,
++    paragraphs: Vec<Paragraph>,
++    text_direction: Option<String>,
++}
++
++/// HWP5 메모 tail은 synthetic root paragraph 아래
++/// `MEMO_LIST(level+1) -> LIST_HEADER(level+1) -> PARA_HEADER(level+1...)` 형태다.
++/// serializer/body_text.rs의 역으로, 한 root 안의 메모 여러 건을 각각 복원한다.
++fn parse_hwp5_memo_tail(records: &[Record], base_level: u16) -> Vec<Hwp5MemoTail> {
++    let memo_level = base_level.saturating_add(1);
++    let mut memos = Vec::new();
++    let mut idx = 1;
++    while idx < records.len() {
++        if records[idx].tag_id != tags::HWPTAG_MEMO_LIST || records[idx].level != memo_level {
++            idx += 1;
++            continue;
++        }
++        if records[idx].data.len() < 4 {
++            idx += 1;
++            continue;
++        }
++        let memo_index = u32::from_le_bytes([
++            records[idx].data[0],
++            records[idx].data[1],
++            records[idx].data[2],
++            records[idx].data[3],
++        ]);
++
++        let Some(list_header_idx) = (idx + 1..records.len()).find(|&candidate| {
++            let record = &records[candidate];
++            if record.level < memo_level {
++                return false;
++            }
++            record.level == memo_level && record.tag_id == tags::HWPTAG_LIST_HEADER
++        }) else {
++            idx += 1;
++            continue;
++        };
++        if records[idx + 1..list_header_idx]
++            .iter()
++            .any(|record| record.level == memo_level && record.tag_id == tags::HWPTAG_MEMO_LIST)
++        {
++            idx = list_header_idx;
++            continue;
++        }
++
++        let list_header = &records[list_header_idx];
++        // MEMO LIST_HEADER: paraCount(i32) + list_attr/property(u32) + reserved[8].
++        // generic HWP5 list_attr의 bits 16..18은 text direction이다(셀 LIST_HEADER와 동일).
++        let list_attr = if list_header.data.len() >= 8 {
++            u32::from_le_bytes([
++                list_header.data[4],
++                list_header.data[5],
++                list_header.data[6],
++                list_header.data[7],
++            ])
++        } else {
++            0
++        };
++        let text_direction = match (list_attr >> 16) & 0x07 {
++            1 => Some("VERTICAL".to_string()),
++            _ => None,
++        };
++
++        // MEMO paragraph는 LIST_HEADER와 같은 level에 PARA_HEADER가 오고 그 자식만
++        // 더 깊다. 선언된 paraCount만큼 정확히 소비해야 뒤의 다른 MEMO_LIST/바탕쪽을
++        // 삼키지 않는다.
++        let declared_paragraphs = if list_header.data.len() >= 4 {
++            i32::from_le_bytes([
++                list_header.data[0],
++                list_header.data[1],
++                list_header.data[2],
++                list_header.data[3],
++            ])
++            .max(0) as usize
++        } else {
++            0
++        };
++        let para_start = list_header_idx + 1;
++        let mut para_end = para_start;
++        let mut consumed = 0usize;
++        while para_end < records.len() && consumed < declared_paragraphs {
++            if records[para_end].tag_id == tags::HWPTAG_PARA_HEADER
++                && records[para_end].level == memo_level
++            {
++                consumed += 1;
++                para_end += 1;
++                while para_end < records.len() && records[para_end].level > memo_level {
++                    para_end += 1;
++                }
++            } else {
++                break;
++            }
++        }
++        memos.push(Hwp5MemoTail {
++            memo_index,
++            paragraphs: parse_paragraph_list(&records[para_start..para_end]),
++            text_direction,
++        });
++        idx = para_end.max(list_header_idx + 1);
++    }
++    memos
++}
++
++/// HWPX MEMO를 HWP5로 내릴 때 serializer는 `%unk` + properties bit15를 쓰고
++/// memo_index로 MEMO_LIST tail과 연결한다. 재파싱 시 이 정확한 legacy 표현만 native
++/// Field(MEMO)로 canonicalize하여 일반 Unknown 필드를 오인하지 않는다.
++fn attach_hwp5_memo(section: &mut Section, memo: Hwp5MemoTail) -> bool {
++    for paragraph in &mut section.paragraphs {
++        for control in &mut paragraph.controls {
++            let Control::Field(field) = control else {
++                continue;
++            };
++            let canonical_memo = field.field_type == FieldType::Memo;
++            let lowered_memo = field.field_type == FieldType::Unknown
++                && field.ctrl_id == tags::FIELD_UNKNOWN
++                && field.properties & (1 << 15) != 0;
++            if field.memo_index != memo.memo_index || (!canonical_memo && !lowered_memo) {
++                continue;
++            }
++            field.field_type = FieldType::Memo;
++            field.ctrl_id = tags::FIELD_MEMO;
++            field.memo_paragraphs = memo.paragraphs;
++            field.memo_text_direction = memo.text_direction;
++            return true;
++        }
++    }
++    false
++}
++
++/// 확장 바탕쪽 탐색에서 MEMO_LIST 직후의 LIST_HEADER를 master-page header로
++/// 오인하지 않기 위한 판정. 직전 동일/상위 level 레코드가 MEMO_LIST일 때만 제외한다.
++fn is_hwp5_memo_list_header(records: &[Record], list_header_idx: usize) -> bool {
++    let Some(header) = records.get(list_header_idx) else {
++        return false;
++    };
++    if header.tag_id != tags::HWPTAG_LIST_HEADER {
++        return false;
++    }
++    records[..list_header_idx]
++        .iter()
++        .rposition(|record| record.level <= header.level)
++        .is_some_and(|idx| {
++            records[idx].level == header.level && records[idx].tag_id == tags::HWPTAG_MEMO_LIST
++        })
++}
++
+ /// 문단 레코드 그룹에서 Paragraph 구성
+ ///
+ /// records[0] = PARA_HEADER, records[1..] = 자식 레코드
+--- a/src/serializer/body_text.rs
++++ b/src/serializer/body_text.rs
+@@ -112,7 +112,7 @@
+     }
+ }
+
+-fn collect_memo_lists(section: &Section) -> Vec<(u32, Vec<Paragraph>)> {
++fn collect_memo_lists(section: &Section) -> Vec<(u32, Option<String>, Vec<Paragraph>)> {
+     let mut memo_lists = Vec::new();
+     for para in &section.paragraphs {
+         for ctrl in &para.controls {
+@@ -120,7 +120,11 @@
+                 if field.field_type == crate::model::control::FieldType::Memo
+                     && !field.memo_paragraphs.is_empty()
+                 {
+-                    memo_lists.push((field.memo_index, field.memo_paragraphs.clone()));
++                    memo_lists.push((
++                        field.memo_index,
++                        field.memo_text_direction.clone(),
++                        field.memo_paragraphs.clone(),
++                    ));
+                 }
+             }
+         }
+@@ -130,7 +134,7 @@
+
+ fn serialize_memo_tail(
+     section: &Section,
+-    memo_lists: &[(u32, Vec<Paragraph>)],
++    memo_lists: &[(u32, Option<String>, Vec<Paragraph>)],
+     records: &mut Vec<Record>,
+ ) {
+     if memo_lists.is_empty() {
+@@ -173,7 +177,7 @@
+     root.has_para_text = false;
+     serialize_paragraph_with_msb(&root, 0, true, records);
+
+-    for (memo_index, paragraphs) in memo_lists {
++    for (memo_index, text_direction, paragraphs) in memo_lists {
+         records.push(Record {
+             tag_id: tags::HWPTAG_MEMO_LIST,
+             level: 1,
+@@ -183,7 +187,14 @@
+
+         let mut list_header = Vec::with_capacity(16);
+         list_header.extend_from_slice(&(paragraphs.len() as u32).to_le_bytes());
+-        list_header.extend_from_slice(&[0; 12]);
++        // MEMO LIST_HEADER property는 generic list_attr와 같은 text-direction bits를 쓴다.
++        // HWPX VERTICAL을 HWP5를 거쳐 다시 HWPX로 저장해도 방향이 보존되게 한다.
++        let list_attr = match text_direction.as_deref() {
++            Some("VERTICAL") | Some("VERTICALALL") => 1_u32 << 16,
++            _ => 0,
++        };
++        list_header.extend_from_slice(&list_attr.to_le_bytes());
++        list_header.extend_from_slice(&[0; 8]);
+         records.push(Record {
+             tag_id: tags::HWPTAG_LIST_HEADER,
+             level: 1,
+--- a/src/serializer/hwpx/roundtrip.rs
++++ b/src/serializer/hwpx/roundtrip.rs
+@@ -755,13 +755,6 @@
+                 || detail.starts_with("extra_properties:")
+                 || detail.starts_with("instance_id:")
+                 || detail.starts_with("ctrl_data_name:")
+-                || detail.starts_with("memo_text_direction:")
+-                // HWPX MEMO is intentionally lowered to the legacy HWP5 unknown-field
+-                // control id by the existing serializer contract. Keep this exact known
+-                // representation transition out of cross-format results without hiding
+-                // any other field_type/ctrl_id mismatch.
+-                || detail == "field_type: expected=Memo actual=Unknown"
+-                || detail == "ctrl_id: expected=0x25256D65 actual=0x25756E6B"
+         }
+         // 원본이 값을 안 가진 imgDim 만 — 다른 크기 필드가 섞여 있으면 남긴다.
+         IrDifference::PictureSize { detail, .. } => {
+@@ -3155,22 +3148,25 @@
+             .iter()
+             .map(|d| d.to_string())
+             .collect::<Vec<_>>();
+-        assert_eq!(details.len(), 5, "{details:?}");
++        assert_eq!(details.len(), 8, "{details:?}");
+         assert!(details.iter().any(|d| d.contains("attr.line_mode:")));
+         assert!(details.iter().any(|d| d.contains("script:")));
++        assert!(details
++            .iter()
++            .any(|d| d.contains("memo_text_direction:")));
++        assert!(details
++            .iter()
++            .any(|d| d.contains("field_type: expected=Memo actual=Unknown")));
+         assert!(details
+             .iter()
++            .any(|d| d.contains("ctrl_id: expected=0x25256D65 actual=0x25756E6B")));
++        assert!(details
++            .iter()
+             .any(|d| d.contains("field_type: expected=Formula actual=Unknown")));
+         assert!(details
+             .iter()
+             .any(|d| d.contains("ctrl_id: expected=0x2525666D actual=0x00000000")));
+         assert!(details.iter().any(|d| d.contains("command:")));
+-        assert!(!details
+-            .iter()
+-            .any(|d| d.contains("expected=Memo actual=Unknown")));
+-        assert!(!details
+-            .iter()
+-            .any(|d| d.contains("0x25256D65 actual=0x25756E6B")));
+     }
+
+     // ---------- #1389: 그림 크기 요소 게이트 동승 ----------
+--- a/src/serializer/hwpx/section.rs
++++ b/src/serializer/hwpx/section.rs
+@@ -1761,6 +1761,24 @@
+     }
+     if !field.parameters.is_empty() {
+         return Some(field.parameters.render_xml("parameters"));
++    }
++    // HWP5에는 HWPX parameters tree가 없지만 MEMO의 memo_index는 CTRL_HEADER에
++    // 별도 저장된다. HWP -> HWPX에서 Number를 다시 합성하지 않으면 재파싱 시 모든
++    // 메모가 index 0으로 합쳐져 다음 HWP 저장에서 MEMO_LIST owner 매칭이 깨진다.
++    if field.field_type == crate::model::control::FieldType::Memo {
++        let command = if field.command.is_empty() {
++            String::new()
++        } else {
++            format!(
++                r#"<hp:stringParam name="Command">{}</hp:stringParam>"#,
++                xml_escape(&field.command),
++            )
++        };
++        let count = if command.is_empty() { 1 } else { 2 };
++        return Some(format!(
++            r#"<hp:parameters cnt="{count}" name="">{command}<hp:integerParam name="Number">{}</hp:integerParam></hp:parameters>"#,
++            field.memo_index,
++        ));
+     }
+     if field.command.is_empty() {
+         return None;
+--- a/src/wasm_api/tests.rs
++++ b/src/wasm_api/tests.rs
+@@ -148,7 +148,100 @@
+     assert_body_hyperlink("legacy-hwpx", &hwpx_reopened, url, display_text);
+ }
+
++fn memo_roundtrip_signature(
++    doc: &HwpDocument,
++) -> Vec<(usize, u32, u32, Option<String>, Vec<String>)> {
++    use crate::model::control::{Control, FieldType};
++
++    let mut out = Vec::new();
++    for (section_idx, section) in doc.document.sections.iter().enumerate() {
++        for paragraph in &section.paragraphs {
++            for control in &paragraph.controls {
++                if let Control::Field(field) = control {
++                    if field.field_type == FieldType::Memo {
++                        out.push((
++                            section_idx,
++                            field.memo_index,
++                            field.ctrl_id,
++                            field.memo_text_direction.clone(),
++                            field
++                                .memo_paragraphs
++                                .iter()
++                                .map(|paragraph| paragraph.text.clone())
++                                .collect(),
++                        ));
++                    }
++                }
++            }
++        }
++    }
++    out.sort_by_key(|entry| (entry.0, entry.1));
++    out
++}
++
+ #[test]
++fn hop_hwpx_memo_survives_hwp_and_hwpx_roundtrips() {
++    use crate::model::control::{Control, FieldType};
++
++    let bytes = std::fs::read("samples/hwpx/aift.hwpx").expect("aift HWPX fixture");
++    let mut source = HwpDocument::from_bytes(&bytes).expect("HWPX parse");
++
++    // HWP5 LIST_HEADER의 text-direction bit 왕복도 함께 검증한다. aift의 첫 MEMO를
++    // 세로쓰기로 만들어 HWPX -> HWP -> reopen -> HWPX 경로가 방향을 보존해야 한다.
++    let mut verticalized = false;
++    for section in &mut source.document.sections {
++        for paragraph in &mut section.paragraphs {
++            for control in &mut paragraph.controls {
++                if let Control::Field(field) = control {
++                    if field.field_type == FieldType::Memo && !verticalized {
++                        field.memo_text_direction = Some("VERTICAL".to_string());
++                        verticalized = true;
++                    }
++                }
++            }
++        }
++    }
++    assert!(verticalized, "aift fixture must contain a MEMO field");
++    let expected = memo_roundtrip_signature(&source);
++    assert_eq!(expected.len(), 2, "aift MEMO count");
++    assert!(expected.iter().all(|memo| !memo.4.is_empty()));
++    let paragraph_counts: Vec<usize> = source
++        .document
++        .sections
++        .iter()
++        .map(|section| section.paragraphs.len())
++        .collect();
++
++    let hwp = source
++        .export_hwp_with_adapter_snapshot()
++        .expect("HWPX MEMO -> HWP save");
++    let hwp_reopened = HwpDocument::from_bytes(&hwp).expect("MEMO HWP reopen");
++    assert_eq!(memo_roundtrip_signature(&hwp_reopened), expected);
++    assert_eq!(
++        hwp_reopened
++            .document
++            .sections
++            .iter()
++            .map(|section| section.paragraphs.len())
++            .collect::<Vec<_>>(),
++        paragraph_counts,
++        "MEMO_LIST synthetic host paragraph must not leak into body"
++    );
++
++    let hwp_again = hwp_reopened
++        .export_hwp_with_adapter_snapshot()
++        .expect("reopened MEMO -> HWP resave");
++    let hwp_reopened_again = HwpDocument::from_bytes(&hwp_again).expect("MEMO HWP rereopen");
++    assert_eq!(memo_roundtrip_signature(&hwp_reopened_again), expected);
++
++    let hwpx = hwp_reopened
++        .export_hwpx_native()
++        .expect("reopened MEMO -> HWPX save");
++    let hwpx_reopened = HwpDocument::from_bytes(&hwpx).expect("MEMO HWPX reopen");
++    assert_eq!(memo_roundtrip_signature(&hwpx_reopened), expected);
++}
++
++#[test]
+ fn hop_insert_hyperlink_rejects_empty_payloads_without_mutation() {
+     let mut doc = HwpDocument::create_empty();
+     let before = doc.document.sections[0].paragraphs[0].clone();

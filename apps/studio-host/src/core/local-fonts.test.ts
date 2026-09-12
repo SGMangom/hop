@@ -104,6 +104,123 @@ describe('local fonts', () => {
     expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
+  it('exposes and loads a restricted family only when native marks the exact face hft-derived', async () => {
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    const addedFamilies: string[] = [];
+    installBinaryFontEnvironment(addedFamilies);
+    invokeMock.mockImplementation(async (command: string, args?: { path?: string }) => {
+      if (command === 'list_local_fonts') {
+        return [{
+          family: 'HCIPoppy',
+          postScriptName: 'HCIPoppy',
+          style: 'normal',
+          weight: 400,
+          sourceKind: 'hft-derived',
+          path: '/private/hft-cache/HCIPoppy.ttf',
+        }];
+      }
+      if (command === 'read_local_font') {
+        expect(args?.path).toBe('/private/hft-cache/HCIPoppy.ttf');
+        return [0, 1, 2, 3];
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const {
+      detectLocalFonts,
+      ensureLocalFontsAvailable,
+      getLocalFonts,
+      hasExactLocalDerivedFont,
+      resolveLocalFont,
+    } = await import('./local-fonts');
+
+    await detectLocalFonts();
+    expect(getLocalFonts()).toContain('HCIPoppy');
+    expect(hasExactLocalDerivedFont('HCI Poppy')).toBe(true);
+    expect(resolveLocalFont('HCI Poppy')?.family).toBe('HCIPoppy');
+
+    const available = await ensureLocalFontsAvailable(['HCI Poppy']);
+    expect(available).toContain('HCI Poppy');
+    expect(available).toContain('HCIPoppy');
+    expect(addedFamilies).toEqual(expect.arrayContaining(['HCIPoppy', 'HCI Poppy']));
+
+    const { resolveCanvasKitFontPlan } = await import('./font-loader');
+    const canvasKitPlan = resolveCanvasKitFontPlan(['HCI Poppy']);
+    expect(canvasKitPlan.unavailableFonts).toEqual([]);
+    expect(canvasKitPlan.sources).toEqual([]);
+  });
+
+  it('resolves a native-provided exact HFT family alias to the same derived bytes', async () => {
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    const addedFamilies: string[] = [];
+    installBinaryFontEnvironment(addedFamilies);
+    invokeMock.mockImplementation(async (command: string, args?: { path?: string }) => {
+      if (command === 'list_local_fonts') {
+        return [{
+          family: '한양신명조',
+          postScriptName: 'HOPHFTMerged',
+          style: 'normal',
+          weight: 400,
+          sourceKind: 'hft-derived',
+          path: '/private/hft-cache/hanyang-myeongjo.ttf',
+          aliases: ['HY신명조', 'HYSinMyeongJo-Medium'],
+        }];
+      }
+      if (command === 'read_local_font') {
+        expect(args?.path).toBe('/private/hft-cache/hanyang-myeongjo.ttf');
+        return [9, 8, 7, 6];
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const {
+      detectLocalFonts,
+      ensureLocalFontsAvailable,
+      getLocalFonts,
+      hasExactLocalDerivedFont,
+      localFontFaceKey,
+      loadLocalFontBytesFor,
+      resolveLocalFont,
+    } = await import('./local-fonts');
+    await detectLocalFonts();
+
+    expect(getLocalFonts()).toContain('한양신명조');
+    expect(hasExactLocalDerivedFont('HY신명조')).toBe(true);
+    expect(resolveLocalFont('HY신명조')?.family).toBe('한양신명조');
+    expect(resolveLocalFont('HYSinMyeongJo-Medium')?.family).toBe('한양신명조');
+
+    const available = await ensureLocalFontsAvailable(['HY신명조']);
+    expect(available).toContain('HY신명조');
+    expect(available).toContain('한양신명조');
+    expect(addedFamilies).toEqual(expect.arrayContaining(['한양신명조', 'HY신명조']));
+
+    const canvasKitBytes = await loadLocalFontBytesFor(['HY신명조']);
+    const resolved = resolveLocalFont('HY신명조')!;
+    expect(Array.from(new Uint8Array(canvasKitBytes.get(localFontFaceKey(resolved))!)))
+      .toEqual([9, 8, 7, 6]);
+  });
+
+  it('does not relax restricted authoring for an ordinary file-backed face with the same name', async () => {
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    const addedFamilies: string[] = [];
+    installBinaryFontEnvironment(addedFamilies);
+    invokeMock.mockResolvedValue([{
+      family: 'HCIPoppy',
+      postScriptName: 'HCIPoppy',
+      style: 'normal',
+      sourceKind: 'file-backed',
+      path: '/vendor/HCIPoppy.ttf',
+    }]);
+
+    const { detectLocalFonts, ensureLocalFontsAvailable, getLocalFonts, hasExactLocalDerivedFont } = await import('./local-fonts');
+    await detectLocalFonts();
+
+    expect(getLocalFonts()).not.toContain('HCIPoppy');
+    expect(hasExactLocalDerivedFont('HCI Poppy')).toBe(false);
+    expect(await ensureLocalFontsAvailable(['HCI Poppy'])).not.toContain('HCI Poppy');
+    expect(addedFamilies).toEqual([]);
+  });
+
   it('returns an empty cached list before detection', async () => {
     const { getLocalFonts } = await import('./local-fonts');
 

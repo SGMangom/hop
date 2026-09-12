@@ -27,11 +27,17 @@ describe('font loader', () => {
     await loadWebFonts(undefined, progress);
     await loadWebFonts(undefined, progress);
 
-    expect(progress).toHaveBeenNthCalledWith(1, 1, 2);
-    expect(progress).toHaveBeenNthCalledWith(2, 2, 2);
-    expect(progress).toHaveBeenCalledTimes(2);
+    expect(progress).toHaveBeenNthCalledWith(1, 1, 5);
+    expect(progress).toHaveBeenNthCalledWith(2, 2, 5);
+    expect(progress).toHaveBeenNthCalledWith(5, 5, 5);
+    expect(progress).toHaveBeenCalledTimes(5);
     expect(fontFaces.some((face) => face.name === '함초롬바탕')).toBe(true);
     expect(fontFaces.some((face) => face.name === '함초롬돋움')).toBe(true);
+    expect(fontFaces.filter((face) => face.name === 'Computer Modern').map((face) => face.source)).toEqual([
+      'url("./fonts/ComputerModern-Regular.ttf") format("truetype")',
+      'url("./fonts/ComputerModern-Italic.ttf") format("truetype")',
+      'url("./fonts/ComputerModern-Bold.ttf") format("truetype")',
+    ]);
   });
 
   it('skips fonts detected from the operating system', async () => {
@@ -60,7 +66,7 @@ describe('font loader', () => {
     await loadWebFonts(['돋움', '굴림', '새굴림'], progress);
 
     const notoSansLoads = fontFaces.filter((face) => face.source.includes('NotoSansKR-Regular.woff2'));
-    expect(progress).toHaveBeenCalledTimes(2);
+    expect(progress).toHaveBeenCalledTimes(5);
     expect(notoSansLoads.some((face) => face.name === '돋움')).toBe(true);
     expect(notoSansLoads.some((face) => face.name === '굴림')).toBe(true);
     expect(notoSansLoads.some((face) => face.name === '새굴림')).toBe(true);
@@ -89,6 +95,7 @@ describe('font loader', () => {
         { family: 'Noto Sans KR', postScriptName: 'NotoSansKR', style: 'normal', sourceKind: 'file-backed' },
       ]),
       ensureLocalFontsAvailable: vi.fn().mockResolvedValue(new Set(['Noto Sans KR'])),
+      hasExactLocalDerivedFont: vi.fn().mockReturnValue(false),
     }));
     const { getDetectedOSFonts, loadWebFonts } = await import('./font-loader');
 
@@ -109,6 +116,7 @@ describe('font loader', () => {
         { family: 'HY헤드라인M', postScriptName: 'HYHeadLineM', style: 'normal', sourceKind: 'system-installed' },
       ]),
       ensureLocalFontsAvailable: vi.fn().mockResolvedValue(new Set(['HY헤드라인M'])),
+      hasExactLocalDerivedFont: vi.fn().mockReturnValue(false),
     }));
     const { getDetectedOSFonts, loadWebFonts } = await import('./font-loader');
 
@@ -117,6 +125,27 @@ describe('font loader', () => {
     expect(getDetectedOSFonts().has('HY헤드라인M')).toBe(false);
     expect(fontFaces.some((face) => face.name === 'HY헤드라인M')).toBe(true);
     expect((appended[0] as { textContent?: string }).textContent).toContain('HY헤드라인M');
+  });
+
+  it('suppresses the old substitute only after an exact HFT-derived face is available', async () => {
+    const fontFaces: Array<{ name: string; source: string }> = [];
+    const { appended } = installFontEnvironment({
+      onFontFace: (face) => fontFaces.push(face),
+    });
+    vi.doMock('./local-fonts', () => ({
+      detectLocalFontEntries: vi.fn().mockResolvedValue([
+        { family: 'HY헤드라인M', postScriptName: 'HYHeadLineM', style: 'normal', sourceKind: 'hft-derived' },
+      ]),
+      ensureLocalFontsAvailable: vi.fn().mockResolvedValue(new Set(['HY헤드라인M'])),
+      hasExactLocalDerivedFont: vi.fn((family: string) => family === 'HY헤드라인M'),
+    }));
+    const { getDetectedOSFonts, loadWebFonts } = await import('./font-loader');
+
+    await loadWebFonts(['HY헤드라인M']);
+
+    expect(getDetectedOSFonts().has('HY헤드라인M')).toBe(true);
+    expect(fontFaces.some((face) => face.name === 'HY헤드라인M')).toBe(false);
+    expect((appended[0] as { textContent?: string }).textContent).not.toContain('font-family: "HY헤드라인M"');
   });
 });
 

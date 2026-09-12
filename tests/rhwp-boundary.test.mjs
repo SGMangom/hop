@@ -42,7 +42,7 @@ test('desktop product crates reach rhwp only through the shared Rust adapter', a
   assert.match(quickLookManifest, /hop-rhwp-adapter\s*=\s*\{/);
   assert.doesNotMatch(desktopManifest, /^rhwp\s*=/m);
   assert.doesNotMatch(quickLookManifest, /^rhwp\s*=/m);
-  assert.match(adapterManifest, /^rhwp\s*=\s*\{\s*path\s*=\s*"\.\.\/\.\.\/\.\.\/third_party\/rhwp"\s*\}/m);
+  assert.match(adapterManifest, /^rhwp\s*=\s*\{\s*path\s*=\s*"\.\.\/\.\.\/\.\.\/target-local\/rhwp-engine"\s*\}/m);
 
   const violations = [];
   for (const root of [

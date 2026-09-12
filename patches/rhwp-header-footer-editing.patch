@@ -1,0 +1,378 @@
+--- a/src/document_core/commands/formatting.rs
++++ b/src/document_core/commands/formatting.rs
+@@ -13,7 +13,7 @@
+ use crate::renderer::page_layout::PageLayoutInfo;
+ use crate::renderer::style_resolver::{resolve_styles, ResolvedStyleSet};
+
+-fn char_shape_mods_affect_text_flow(mods: &crate::model::style::CharShapeMods) -> bool {
++pub(super) fn char_shape_mods_affect_text_flow(mods: &crate::model::style::CharShapeMods) -> bool {
+     mods.base_size.is_some()
+         || mods.font_ids.is_some()
+         || mods.ratios.is_some()
+--- a/src/document_core/commands/header_footer_ops.rs
++++ b/src/document_core/commands/header_footer_ops.rs
+@@ -1,9 +1,9 @@
+ //! 머리말/꼬리말 생성·조회·텍스트 편집 관련 native 메서드
+
+-use super::formatting::para_shape_mods_affect_text_flow;
++use super::formatting::{char_shape_mods_affect_text_flow, para_shape_mods_affect_text_flow};
+ use crate::document_core::helpers::{
+-    build_tab_def_from_json, json_has_border_keys, json_has_tab_keys, parse_json_i16_array,
+-    parse_para_shape_mods,
++    build_tab_def_from_json, json_has_border_keys, json_has_tab_keys, parse_char_shape_mods,
++    parse_json_i16_array, parse_para_shape_mods,
+ };
+ use crate::document_core::DocumentCore;
+ use crate::error::HwpError;
+@@ -531,6 +531,82 @@
+             "{{\"ok\":true,\"paraCount\":{},\"charCount\":{}}}",
+             para_count, char_count
+         ))
++    }
++
++    /// 머리말/꼬리말 문단의 현재 글자 속성을 조회한다.
++    pub fn get_char_properties_in_hf_native(
++        &self,
++        section_idx: usize,
++        is_header: bool,
++        apply_to: u8,
++        hf_para_idx: usize,
++        char_offset: usize,
++    ) -> Result<String, HwpError> {
++        let para = self
++            .get_hf_paragraph_ref(section_idx, is_header, apply_to, hf_para_idx)
++            .ok_or_else(|| {
++                HwpError::RenderError("머리말/꼬리말 문단을 찾을 수 없습니다".to_string())
++            })?;
++        Ok(self.build_char_properties_json(para, char_offset))
++    }
++
++    /// 머리말/꼬리말 문단의 실제 선택 범위에 글자 서식을 적용한다.
++    /// 선택 없는 캐럿의 대기 서식은 Studio host가 보관하고, 텍스트가 삽입된 직후
++    /// 이 API로 삽입 범위에 적용한다. 이로써 본문용 pending shape가 HF 밖으로 새지 않는다.
++    pub fn apply_char_format_in_hf_native(
++        &mut self,
++        section_idx: usize,
++        is_header: bool,
++        apply_to: u8,
++        hf_para_idx: usize,
++        start_offset: usize,
++        end_offset: usize,
++        props_json: &str,
++    ) -> Result<String, HwpError> {
++        if section_idx >= self.document.sections.len() {
++            return Err(HwpError::RenderError(format!(
++                "구역 {} 범위 초과",
++                section_idx
++            )));
++        }
++        if start_offset >= end_offset {
++            return Ok("{\"ok\":true}".to_string());
++        }
++
++        let mods = parse_char_shape_mods(props_json);
++        let (base_id, text_len) = {
++            let para = self
++                .get_hf_paragraph_ref(section_idx, is_header, apply_to, hf_para_idx)
++                .ok_or_else(|| {
++                    HwpError::RenderError("머리말/꼬리말 문단을 찾을 수 없습니다".to_string())
++                })?;
++            (
++                para.char_shape_id_at(start_offset).unwrap_or(0),
++                para.text.chars().count(),
++            )
++        };
++        let start = start_offset.min(text_len);
++        let end = end_offset.min(text_len);
++        if start >= end {
++            return Ok("{\"ok\":true}".to_string());
++        }
++
++        let new_id = self.document.find_or_create_char_shape(base_id, &mods);
++        self.get_hf_paragraph_mut(section_idx, is_header, apply_to, hf_para_idx)?
++            .apply_char_shape_range(start, end, new_id);
++
++        if char_shape_mods_affect_text_flow(&mods) {
++            self.reflow_hf_paragraph(section_idx, is_header, apply_to, hf_para_idx);
++        }
++        self.document.sections[section_idx].raw_stream = None;
++        self.rebuild_section(section_idx);
++        self.event_log.push(DocumentEvent::CharFormatChanged {
++            section: section_idx,
++            para: hf_para_idx,
++            start,
++            end,
++        });
++        Ok("{\"ok\":true}".to_string())
+     }
+
+     /// 머리말/꼬리말 삭제 (컨트롤 자체를 제거)
+@@ -1176,6 +1252,42 @@
+
+         let result = core.get_header_footer_native(0, true, 0).unwrap();
+         assert!(result.contains("Hello"));
++    }
++
++    #[test]
++    fn header_footer_char_format_updates_only_selected_range() {
++        let mut core = DocumentCore::new_empty();
++        core.create_blank_document_native().unwrap();
++        core.create_header_footer_native(0, true, 0).unwrap();
++        core.insert_text_in_header_footer_native(0, true, 0, 0, 0, "ABC")
++            .unwrap();
++
++        let before = core
++            .get_hf_paragraph_ref(0, true, 0, 0)
++            .unwrap()
++            .char_shape_id_at(0)
++            .unwrap_or(0);
++        core.apply_char_format_in_hf_native(
++            0,
++            true,
++            0,
++            0,
++            0,
++            2,
++            "{\"fontSize\":1800,\"bold\":true}",
++        )
++        .unwrap();
++
++        let para = core.get_hf_paragraph_ref(0, true, 0, 0).unwrap();
++        let selected = para.char_shape_id_at(0).unwrap();
++        let selected_second = para.char_shape_id_at(1).unwrap();
++        let untouched = para.char_shape_id_at(2).unwrap();
++        assert_ne!(selected, before);
++        assert_eq!(selected_second, selected);
++        assert_eq!(untouched, before);
++        let shape = &core.document.doc_info.char_shapes[selected as usize];
++        assert_eq!(shape.base_size, 1800);
++        assert!(shape.bold);
+     }
+
+     /// 필드 삽입의 반환 오프셋은 실제로 삽입된 자리를 가리킨다.
+--- a/src/document_core/queries/cursor_rect.rs
++++ b/src/document_core/queries/cursor_rect.rs
+@@ -4770,6 +4770,148 @@
+             last.char_start + last.char_count,
+             page_num,
+         ))
++    }
++
++    /// 머리말/꼬리말 내부 선택 영역의 줄별 사각형을 계산한다.
++    pub fn get_selection_rects_in_header_footer_native(
++        &self,
++        page_num: u32,
++        is_header: bool,
++        start_para_idx: usize,
++        start_char_offset: usize,
++        end_para_idx: usize,
++        end_char_offset: usize,
++    ) -> Result<String, HwpError> {
++        use crate::renderer::layout::compute_char_positions;
++        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
++
++        let tree = self.build_page_tree(page_num)?;
++        let Some(hf_node) = tree.root.children.iter().find(|child| {
++            if is_header {
++                matches!(child.node_type, RenderNodeType::Header)
++            } else {
++                matches!(child.node_type, RenderNodeType::Footer)
++            }
++        }) else {
++            return Ok("[]".to_string());
++        };
++
++        #[derive(Clone)]
++        struct Run {
++            para_idx: usize,
++            char_start: usize,
++            char_count: usize,
++            positions: Vec<f64>,
++            x: f64,
++            y: f64,
++            width: f64,
++            height: f64,
++        }
++        fn collect(node: &RenderNode, runs: &mut Vec<Run>) {
++            if let RenderNodeType::TextRun(ref tr) = node.node_type {
++                if let (Some(marker_para), Some(char_start)) = (tr.para_index, tr.char_start) {
++                    if marker_para >= usize::MAX - 1000 {
++                        runs.push(Run {
++                            para_idx: usize::MAX - marker_para,
++                            char_start,
++                            char_count: tr.text.chars().count(),
++                            positions: compute_char_positions(tr.display_or_text(), &tr.style),
++                            x: node.bbox.x,
++                            y: node.bbox.y,
++                            width: node.bbox.width,
++                            height: node.bbox.height,
++                        });
++                    }
++                }
++            }
++            for child in &node.children {
++                collect(child, runs);
++            }
++        }
++        fn cmp_pos(a: (usize, usize), b: (usize, usize)) -> std::cmp::Ordering {
++            a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1))
++        }
++        fn x_at(run: &Run, model_offset: usize) -> f64 {
++            if model_offset <= run.char_start {
++                return run.x;
++            }
++            let local_model = (model_offset - run.char_start).min(run.char_count);
++            let display_len = run.positions.len().saturating_sub(1);
++            let display_idx = if run.char_count == 0 || display_len == run.char_count {
++                local_model
++            } else {
++                (local_model * display_len + run.char_count / 2) / run.char_count
++            };
++            run.positions
++                .get(display_idx)
++                .copied()
++                .map(|dx| run.x + dx)
++                .unwrap_or(run.x + run.width)
++        }
++
++        let (start, end) = if cmp_pos(
++            (start_para_idx, start_char_offset),
++            (end_para_idx, end_char_offset),
++        )
++        .is_gt()
++        {
++            (
++                (end_para_idx, end_char_offset),
++                (start_para_idx, start_char_offset),
++            )
++        } else {
++            (
++                (start_para_idx, start_char_offset),
++                (end_para_idx, end_char_offset),
++            )
++        };
++        if start == end {
++            return Ok("[]".to_string());
++        }
++
++        let mut runs = Vec::new();
++        collect(hf_node, &mut runs);
++        runs.sort_by(|a, b| {
++            a.para_idx
++                .cmp(&b.para_idx)
++                .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
++                .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
++        });
++
++        let mut rects = Vec::new();
++        for run in runs {
++            let run_start = (run.para_idx, run.char_start);
++            let run_end = (run.para_idx, run.char_start + run.char_count);
++            if cmp_pos(run_end, start) != std::cmp::Ordering::Greater
++                || cmp_pos(run_start, end) != std::cmp::Ordering::Less
++            {
++                continue;
++            }
++            let sel_start = if run.para_idx == start.0 {
++                start.1.max(run.char_start)
++            } else {
++                run.char_start
++            };
++            let sel_end = if run.para_idx == end.0 {
++                end.1.min(run.char_start + run.char_count)
++            } else {
++                run.char_start + run.char_count
++            };
++            if sel_end <= sel_start {
++                continue;
++            }
++            let x1 = x_at(&run, sel_start);
++            let x2 = x_at(&run, sel_end);
++            rects.push(format!(
++                "{{\"pageIndex\":{},\"x\":{:.2},\"y\":{:.2},\"width\":{:.2},\"height\":{:.2}}}",
++                page_num,
++                x1.min(x2),
++                run.y,
++                (x2 - x1).abs().max(1.0),
++                run.height,
++            ));
++        }
++        Ok(format!("[{}]", rects.join(",")))
+     }
+
+     /// 각주 영역 히트테스트
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -2808,6 +2808,72 @@
+     ) -> Result<String, JsValue> {
+         self.hit_test_in_header_footer_native(page_num, is_header, x, y)
+             .map_err(|e| e.into())
++    }
++
++    /// 머리말/꼬리말 선택 영역의 화면 사각형을 반환한다.
++    #[wasm_bindgen(js_name = getSelectionRectsInHeaderFooter)]
++    pub fn get_selection_rects_in_header_footer(
++        &self,
++        page_num: u32,
++        is_header: bool,
++        start_para_idx: usize,
++        start_char_offset: usize,
++        end_para_idx: usize,
++        end_char_offset: usize,
++    ) -> Result<String, JsValue> {
++        self.get_selection_rects_in_header_footer_native(
++            page_num,
++            is_header,
++            start_para_idx,
++            start_char_offset,
++            end_para_idx,
++            end_char_offset,
++        )
++        .map_err(|e| e.into())
++    }
++
++    /// 머리말/꼬리말 문단의 현재 글자 속성을 조회한다.
++    #[wasm_bindgen(js_name = getCharPropertiesInHf)]
++    pub fn get_char_properties_in_hf(
++        &self,
++        section_idx: usize,
++        is_header: bool,
++        apply_to: u8,
++        hf_para_idx: usize,
++        char_offset: usize,
++    ) -> Result<String, JsValue> {
++        self.get_char_properties_in_hf_native(
++            section_idx,
++            is_header,
++            apply_to,
++            hf_para_idx,
++            char_offset,
++        )
++        .map_err(|e| e.into())
++    }
++
++    /// 머리말/꼬리말 문단의 실제 선택 범위에 글자 서식을 적용한다.
++    #[wasm_bindgen(js_name = applyCharFormatInHf)]
++    pub fn apply_char_format_in_hf(
++        &mut self,
++        section_idx: usize,
++        is_header: bool,
++        apply_to: u8,
++        hf_para_idx: usize,
++        start_offset: usize,
++        end_offset: usize,
++        props_json: &str,
++    ) -> Result<String, JsValue> {
++        self.apply_char_format_in_hf_native(
++            section_idx,
++            is_header,
++            apply_to,
++            hf_para_idx,
++            start_offset,
++            end_offset,
++            props_json,
++        )
++        .map_err(|e| e.into())
+     }
+
+     /// 머리말/꼬리말 문단의 문단 속성을 조회한다.

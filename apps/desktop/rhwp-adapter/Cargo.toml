@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-rhwp = { path = "../../../third_party/rhwp" }
+rhwp = { path = "../../../target-local/rhwp-engine" }
 
 [features]
 default = []

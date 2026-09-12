@@ -207,6 +207,29 @@ describe('openPrintDialog', () => {
     expect(printStyle?.textContent).toContain('break-after: auto;');
   });
 
+  it('assigns each printed page its own physical page size', async () => {
+    const sizes = [
+      pageInfo({ pageIndex: 0, width: 793.7, height: 1122.5 }),
+      pageInfo({ pageIndex: 1, width: 1122.5, height: 793.7 }),
+    ];
+    const doc = {
+      fileName: 'mixed.hwp',
+      pageCount: 2,
+      getPageInfo: vi.fn((pageIndex: number) => sizes[pageIndex]!),
+      renderPageSvg: vi.fn(() => '<svg></svg>'),
+    };
+
+    await openPrintDialog(doc, { print: printMock });
+
+    const printStyle = fakeDocument.head.children.find((child) => child.id === 'hop-print-style');
+    expect(doc.getPageInfo).toHaveBeenNthCalledWith(1, 0);
+    expect(doc.getPageInfo).toHaveBeenNthCalledWith(2, 1);
+    expect(printStyle?.textContent).toContain('@page hop-print-page-1 { size: 210mm 297mm; margin: 0; }');
+    expect(printStyle?.textContent).toContain('@page hop-print-page-2 { size: 297mm 210mm; margin: 0; }');
+    expect(printStyle?.textContent).toContain('page: hop-print-page-2;');
+    expect(printStyle?.textContent).toContain('height: calc(210mm - 0.1mm);');
+  });
+
   it('rejects malformed SVG gracefully', async () => {
     (globalThis as Record<string, unknown>).DOMParser = makeFakeDOMParser(true);
 

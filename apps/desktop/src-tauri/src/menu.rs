@@ -24,9 +24,9 @@ pub fn install(app: &mut App) -> tauri::Result<()> {
     let save_as = MenuItemBuilder::with_id("file:save-as", "Save As...")
         .accelerator("CmdOrCtrl+Shift+S")
         .build(app)?;
-    let export_pdf = MenuItemBuilder::with_id("file:export-pdf", "Export PDF...")
-        .accelerator("CmdOrCtrl+E")
-        .build(app)?;
+    // Ctrl/Cmd+E is the editor's Hancom-compatible delete command. Keep PDF export
+    // menu-only so the native application menu cannot steal that editor shortcut.
+    let export_pdf = MenuItemBuilder::with_id("file:export-pdf", "Export PDF...").build(app)?;
     let print = MenuItemBuilder::with_id("file:print", "Print...")
         .accelerator("CmdOrCtrl+P")
         .build(app)?;

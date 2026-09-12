@@ -18,13 +18,14 @@ pub fn export_core_to_pdf(
     let page_count = core.page_count();
     let pages = resolve_page_range(page_range, page_count)?;
     let total = pages.len() as u32;
+    let exact_hft_fonts = crate::font_catalog::hft_derived_font_family_map();
 
     let mut svg_pages = Vec::with_capacity(pages.len());
     for (idx, page) in pages.iter().enumerate() {
         let svg = core
-            .render_page_svg_native(*page)
+            .render_page_svg_searchable_native(*page)
             .map_err(|e| format!("페이지 {} 렌더링 실패: {}", page + 1, e))?;
-        svg_pages.push(add_font_fallbacks(&svg));
+        svg_pages.push(add_font_fallbacks(&svg, &exact_hft_fonts));
         on_progress(
             "render",
             idx as u32 + 1,
@@ -146,6 +147,63 @@ mod tests {
         )
         .unwrap_err()
         .contains("총 4페이지"));
+    }
+
+    #[test]
+    fn equation_hwp_roundtrip_exports_computer_modern_pdf() {
+        let script = r"i\hbar\frac{\partial\psi}{\partial t}=-\frac{\hbar^2}{2m}\nabla^2\psi+V\psi";
+        let font_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts/computer-modern");
+        let temporary = tempfile::tempdir().unwrap();
+        // Explicitly opt in to retaining the real document and export for visual inspection.
+        let output = std::env::var_os("HOP_EQUATION_PROOF_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| temporary.path().to_path_buf());
+        std::fs::create_dir_all(&output).unwrap();
+
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        let inserted: serde_json::Value = serde_json::from_str(
+            &core
+                .insert_equation_native(0, 0, 0, script, 1800, 0)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inserted["ok"], true);
+        let control = inserted["controlIdx"].as_u64().unwrap() as usize;
+        let hwp_path = output.join("schrodinger.hwp");
+        atomic_write(&hwp_path, &core.export_hwp_native().unwrap()).unwrap();
+        let reopened = DocumentCore::from_bytes(&std::fs::read(&hwp_path).unwrap()).unwrap();
+        let properties: serde_json::Value = serde_json::from_str(
+            &reopened
+                .get_equation_properties_native(0, 0, control, None, None)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(properties["script"], script);
+        assert_eq!(properties["fontSize"], 1800);
+        assert_eq!(reopened.page_count(), 1);
+
+        let svg = reopened.render_page_svg_native(0).unwrap();
+        assert!(svg.contains("Computer Modern"));
+        for symbol in ["ℏ", "∂", "ψ", "∇"] {
+            assert!(svg.contains(symbol), "missing {symbol}");
+        }
+        assert!(!svg.contains("Latin Modern"));
+        atomic_write(&output.join("schrodinger.svg"), svg.as_bytes()).unwrap();
+        let pdf_path = output.join("schrodinger.pdf");
+        assert_eq!(
+            export_core_to_pdf(&reopened, &pdf_path, None, vec![font_dir], |_, _, _, _| {})
+                .unwrap(),
+            1
+        );
+        let pdf = std::fs::read(&pdf_path).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(text.contains("ComputerModern"));
+        assert!(text.contains("/FontFile"), "PDF must embed font data");
+        assert!(text.contains("/ToUnicode"));
+        assert!(!text.contains("LatinModern"));
     }
 
     #[test]

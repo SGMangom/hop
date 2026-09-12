@@ -24,6 +24,7 @@ interface DesktopEventsOptions {
   eventBus: EventBus;
   setMessage(message: string): void;
   onUpdateState(state: DesktopUpdateState): void;
+  onHftFontsUpdated?(): Promise<void> | void;
 }
 
 interface CloseRequestEvent {
@@ -36,6 +37,7 @@ export async function setupDesktopEvents({
   eventBus,
   setMessage,
   onUpdateState,
+  onHftFontsUpdated,
 }: DesktopEventsOptions): Promise<void> {
   if (!isTauriRuntime()) return;
 
@@ -51,6 +53,12 @@ export async function setupDesktopEvents({
 
   await listen('hop-update-state', (event) => {
     onUpdateState(event.payload as DesktopUpdateState);
+  });
+
+  await listen('hop-hft-fonts-updated', () => {
+    void Promise.resolve(onHftFontsUpdated?.()).catch((error) => {
+      console.warn('[desktop-events] HFT font refresh failed:', error);
+    });
   });
 
   await currentWindow.listen('hop-menu-command', (event) => {
@@ -106,6 +114,17 @@ export async function setupDesktopEvents({
       onUpdateState(await desktop.getUpdateState());
     } catch (error) {
       console.warn('[desktop-events] updater state hydrate failed:', error);
+    }
+  }
+
+  // Close the startup race where the native cache becomes ready just before
+  // this listener is installed. This is a forced catalog refresh and is safe
+  // when no HFT cache exists yet.
+  if (onHftFontsUpdated) {
+    try {
+      await onHftFontsUpdated();
+    } catch (error) {
+      console.warn('[desktop-events] initial HFT font refresh failed:', error);
     }
   }
 }

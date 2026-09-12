@@ -1,0 +1,181 @@
+diff --git a/src/parser/hwpx/mod.rs b/src/parser/hwpx/mod.rs
+index f49b116..7966644 100644
+--- a/src/parser/hwpx/mod.rs
++++ b/src/parser/hwpx/mod.rs
+@@ -351,6 +351,8 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
+         "settings.xml",
+         "Preview/PrvText.txt",
+         "Preview/PrvImage.png",
++        "Scripts/headerScripts.js",
++        "Scripts/sourceScripts.js",
+         crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH,
+     ];
+     let mut hwpx_aux_entries: Vec<(String, Vec<u8>)> = Vec::new();
+diff --git a/src/parser/hwpx/contract_streams.rs b/src/parser/hwpx/contract_streams.rs
+index 7d6c707..52e27df 100644
+--- a/src/parser/hwpx/contract_streams.rs
++++ b/src/parser/hwpx/contract_streams.rs
+@@ -91,8 +91,14 @@ pub(super) fn extract_contract_streams(reader: &mut HwpxReader) -> ContractStrea
+     //
+     // 압축은 raw deflate (zlib 헤더 없음). Stage 2.1 의 단순 zlib_deflate(sourceScripts) 는
+     // 한컴이 받아들이지만 var 선언 부재로 Form 컨트롤 JS 핸들러 미동작.
+-    let header_scripts = reader.read_file_bytes("Scripts/headerScripts").ok();
+-    let source_scripts = reader.read_file_bytes("Scripts/sourceScripts").ok();
++    let header_scripts = reader
++        .read_file_bytes("Scripts/headerScripts.js")
++        .or_else(|_| reader.read_file_bytes("Scripts/headerScripts"))
++        .ok();
++    let source_scripts = reader
++        .read_file_bytes("Scripts/sourceScripts.js")
++        .or_else(|_| reader.read_file_bytes("Scripts/sourceScripts"))
++        .ok();
+     let scripts_default_jscript = match (header_scripts, source_scripts) {
+         (Some(hs), Some(ss)) if !hs.is_empty() || !ss.is_empty() => {
+             let mut combined = Vec::with_capacity(4 + hs.len() + 4 + ss.len() + 12);
+diff --git a/src/serializer/hwpx/content.rs b/src/serializer/hwpx/content.rs
+index a6b0d3e..9adc214 100644
+--- a/src/serializer/hwpx/content.rs
++++ b/src/serializer/hwpx/content.rs
+@@ -20,6 +20,13 @@ pub struct BinDataEntry {
+     pub is_embedded: bool,
+ }
+
++/// HWPX script entry preserved inertly for lossless package round-trip.
++#[derive(Debug, Clone)]
++pub struct ScriptEntry {
++    pub id: &'static str,
++    pub href: &'static str,
++}
++
+ /// 원본 content.hpf 에서 `<opf:metadata> … </opf:metadata>` 블록(태그 포함)을
+ /// 그대로 추출한다.
+ ///
+@@ -38,6 +45,7 @@ pub fn write_content_hpf(
+     section_hrefs: &[String],
+     bin_data: &[BinDataEntry],
+     master_items: &[(String, String)],
++    script_items: &[ScriptEntry],
+     original_content_hpf: Option<&[u8]>,
+ ) -> Result<Vec<u8>, SerializeError> {
+     // 원본 metadata 블록(있으면) — 본문과 무관한 저작자/일자/주제 보존용.
+@@ -167,6 +175,18 @@ pub fn write_content_hpf(
+         ],
+     )?;
+
++    for script in script_items {
++        empty_tag(
++            &mut w,
++            "opf:item",
++            &[
++                ("id", script.id),
++                ("href", script.href),
++                ("media-type", "application/x-javascript ;charset=utf-16"),
++            ],
++        )?;
++    }
++
+     for entry in bin_data {
+         empty_tag(
+             &mut w,
+@@ -197,6 +217,13 @@ pub fn write_content_hpf(
+             &[("idref", id.as_str()), ("linear", "yes")],
+         )?;
+     }
++    for script in script_items {
++        empty_tag(
++            &mut w,
++            "opf:itemref",
++            &[("idref", script.id), ("linear", "yes")],
++        )?;
++    }
+     end_tag(&mut w, "opf:spine")?;
+
+     end_tag(&mut w, "opf:package")?;
+@@ -218,6 +245,7 @@ mod tests {
+             &["Contents/section0.xml".to_string()],
+             &[],
+             &[],
++            &[],
+             Some(original.as_bytes()),
+         )
+         .expect("serialize");
+@@ -254,13 +282,31 @@ mod tests {
+     /// 원본이 없으면(HWP5 등) 하드코딩 metadata 로 폴백한다.
+     #[test]
+     fn metadata_falls_back_when_no_original() {
+-        let out = write_content_hpf(&["Contents/section0.xml".to_string()], &[], &[], None)
+-            .expect("serialize");
++        let out = write_content_hpf(
++            &["Contents/section0.xml".to_string()],
++            &[],
++            &[],
++            &[],
++            None,
++        )
++        .expect("serialize");
+         let s = String::from_utf8(out).expect("utf8");
+         assert!(s.contains(r#"<opf:meta name="creator" content="text">rhwp</opf:meta>"#));
+         assert!(s.contains(r#"<opf:itemref idref="section0" linear="yes"/>"#));
+     }
+
++    #[test]
++    fn script_entries_are_declared_in_manifest_and_spine() {
++        let scripts = [ScriptEntry {
++            id: "sourcesc",
++            href: "Scripts/sourceScripts.js",
++        }];
++        let out = write_content_hpf(&[], &[], &[], &scripts, None).expect("serialize");
++        let s = String::from_utf8(out).expect("utf8");
++        assert!(s.contains(r#"<opf:item id="sourcesc" href="Scripts/sourceScripts.js" media-type="application/x-javascript ;charset=utf-16"/>"#));
++        assert!(s.contains(r#"<opf:itemref idref="sourcesc" linear="yes"/>"#));
++    }
++
+     /// metadata 블록을 인식하지 못하면(깨진 입력) None → 폴백.
+     #[test]
+     fn extract_metadata_handles_missing() {
+diff --git a/src/serializer/hwpx/mod.rs b/src/serializer/hwpx/mod.rs
+index 8052f31..bcc64c9 100644
+--- a/src/serializer/hwpx/mod.rs
++++ b/src/serializer/hwpx/mod.rs
+@@ -121,6 +121,24 @@ pub fn serialize_hwpx_with_report(doc: &Document) -> Result<SerializedDocument,
+             .unwrap_or_else(|| SETTINGS_XML.as_bytes()),
+     )?;
+
++    // Preserve source HWPX script package parts byte-for-byte. They remain inert:
++    // rhwp/HOP does not execute them; this is only for round-trip interoperability.
++    let mut script_items = Vec::new();
++    if let Some(bytes) = doc.hwpx_aux_entry("Scripts/headerScripts.js") {
++        z.write_deflated("Scripts/headerScripts.js", bytes)?;
++        script_items.push(content::ScriptEntry {
++            id: "headersc",
++            href: "Scripts/headerScripts.js",
++        });
++    }
++    if let Some(bytes) = doc.hwpx_aux_entry("Scripts/sourceScripts.js") {
++        z.write_deflated("Scripts/sourceScripts.js", bytes)?;
++        script_items.push(content::ScriptEntry {
++            id: "sourcesc",
++            href: "Scripts/sourceScripts.js",
++        });
++    }
++
+     // 7. META-INF/container.rdf — header + every section part.
+     // Hancom uses this RDF graph alongside content.hpf; a stale one-section
+     // RDF makes multi-section documents fail to open even when the ZIP and
+@@ -235,6 +253,7 @@ pub fn serialize_hwpx_with_report(doc: &Document) -> Result<SerializedDocument,
+         &section_hrefs,
+         &content_bin_entries,
+         &master_items,
++        &script_items,
+         doc.hwpx_aux_entry("Contents/content.hpf"),
+     )?;
+     z.write_deflated("Contents/content.hpf", &content_hpf)?;
+@@ -381,6 +400,8 @@ mod tests {
+             ("settings.xml", b"<custom-settings printInfo=\"on\"/>"),
+             ("Preview/PrvText.txt", b"preview body text"),
+             ("Preview/PrvImage.png", &[0x89, b'P', b'N', b'G', 1, 2, 3]),
++            ("Scripts/headerScripts.js", b"header-script"),
++            ("Scripts/sourceScripts.js", b"source-script"),
+         ];
+         doc.hwpx_aux_entries = custom
+             .iter()

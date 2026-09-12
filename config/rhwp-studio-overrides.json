@@ -11,7 +11,8 @@
       "command/commands/file": "f2a0a67b6d424fa4c9cf0cd16a64a57b673451bf139ef2103106b1ce82330503",
       "ui/about-dialog": "9cbb79eef1e407706899c2989147f3da3f82678a39fe5b67923a456d5157c84b",
       "ui/dialog": "ec55feb51d76ab90094bbc04ba7d2c5eacb25dee4ba7e8dd5c1c88e746944afd",
-      "ui/toolbar": "29227846354d9fa97d81fd8bdcb7f8d0b5ce9817c8a11b4525b8f02251891427"
+      "ui/toolbar": "29227846354d9fa97d81fd8bdcb7f8d0b5ce9817c8a11b4525b8f02251891427",
+      "engine/input-handler": "a8521460de91837c3dd7d5f2cef71da46f8f23e6eca8b137caf6f68da64057fe"
     },
     "assets": {
       "public/images/icon_small_ko_dark.svg": "9d02ea0b8c1d399a89290d97613759826f19f3e3f392b6d79dcf6109e7e15fa6"
@@ -64,6 +65,11 @@
       "reason": "Owns the typed native filesystem, session, save, export and print boundary."
     },
     {
+      "id": "engine/input-handler",
+      "strategy": "extension",
+      "reason": "Extends upstream text editing with Hancom-style direct header/footer hit testing, selection and character formatting."
+    },
+    {
       "id": "command/shortcut-map",
       "strategy": "extension",
       "reason": "Adds HOP desktop shortcuts while preserving upstream shortcut assignments."
@@ -107,6 +113,21 @@
       "id": "ui/print-dialog",
       "strategy": "contribution",
       "reason": "Owns HOP native print and PDF export choices."
+    },
+    {
+      "id": "ui/shortcut-augment",
+      "strategy": "contribution",
+      "reason": "Adds desktop shortcut collision handling and HOP-only command chords without forking upstream keyboard code."
+    },
+    {
+      "id": "ui/status-page-label",
+      "strategy": "contribution",
+      "reason": "Formats logical HWP page numbering alongside the physical document position in the HOP status bar."
+    },
+    {
+      "id": "ui/toolbar-command-state",
+      "strategy": "contribution",
+      "reason": "Keeps HOP icon toolbars synchronized with upstream command canExecute state."
     },
     {
       "id": "ui/recent-documents-dialog",

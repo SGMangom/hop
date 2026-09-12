@@ -1,0 +1,309 @@
+--- a/src/document_core/queries/field_query.rs
++++ b/src/document_core/queries/field_query.rs
+@@ -204,6 +204,77 @@
+         Ok(format!(
+             "{{\"ok\":true,\"fieldId\":{},\"charOffset\":{}}}",
+             field_id, inserted_offset
++        ))
++    }
++
++    /// 본문 문단의 현재 커서 위치에 하이퍼링크 필드를 삽입한다.
++    ///
++    /// 하이퍼링크는 HWPX의 네이티브 `Field(HYPERLINK)` + `FieldRange`로 모델링한다.
++    /// 표시 텍스트를 먼저 본문에 삽입한 뒤 그 가시 범위를 fieldBegin/fieldEnd로 감싸므로
++    /// HWP5 저장에서도 `%hlk` CTRL_HEADER와 FIELD_BEGIN/FIELD_END 쌍으로 살아남는다.
++    /// 셀/글상자 경로는 별도 좌표/dirty 계약이 필요하므로 이 API는 의도적으로 본문 전용이다.
++    pub fn insert_hyperlink_at(
++        &mut self,
++        section_idx: usize,
++        para_idx: usize,
++        char_offset: usize,
++        url: &str,
++        display_text: &str,
++    ) -> Result<String, HwpError> {
++        let url = url.trim();
++        if url.is_empty() {
++            return Err(HwpError::InvalidField(
++                "하이퍼링크 주소가 비어 있습니다".into(),
++            ));
++        }
++        if display_text.is_empty() {
++            return Err(HwpError::InvalidField(
++                "하이퍼링크 표시 텍스트가 비어 있습니다".into(),
++            ));
++        }
++
++        let field_id = self.next_click_here_field_id();
++        let (start_offset, end_offset, control_idx) = {
++            let section = self
++                .document
++                .sections
++                .get_mut(section_idx)
++                .ok_or_else(|| HwpError::InvalidField("구역 인덱스 초과".into()))?;
++            section.raw_stream = None;
++            let para = section
++                .paragraphs
++                .get_mut(para_idx)
++                .ok_or_else(|| HwpError::InvalidField("문단 인덱스 초과".into()))?;
++            insert_hyperlink_field_in_para(para, char_offset, field_id, url, display_text)?
++        };
++
++        let stored_end_for_reset = crate::renderer::composer::paragraph_flow_end(
++            &self.document.sections[section_idx].paragraphs[para_idx],
++        );
++        self.reflow_paragraph(section_idx, para_idx);
++        let doc_hwp3_layout = self.document.layout_profile().hwp3_layout();
++        crate::renderer::composer::recalculate_section_vpos(
++            &mut self.document.sections[section_idx].paragraphs,
++            para_idx,
++            None,
++            stored_end_for_reset,
++            &self.styles,
++            self.dpi,
++            doc_hwp3_layout,
++        );
++        self.recompose_paragraph(section_idx, para_idx);
++        self.paginate_if_needed();
++        self.invalidate_page_tree_cache();
++        self.event_log.push(DocumentEvent::TextInserted {
++            section: section_idx,
++            para: para_idx,
++            offset: start_offset,
++            len: display_text.chars().count(),
++        });
++
++        Ok(format!(
++            "{{\"ok\":true,\"fieldId\":{},\"startOffset\":{},\"charOffset\":{},\"controlIdx\":{}}}",
++            field_id, start_offset, end_offset, control_idx
+         ))
+     }
+
+@@ -2182,6 +2253,80 @@
+     }
+ }
+
++fn insert_hyperlink_field_in_para(
++    para: &mut Paragraph,
++    char_offset: usize,
++    field_id: u32,
++    url: &str,
++    display_text: &str,
++) -> Result<(usize, usize, usize), HwpError> {
++    let text_len = para.text.chars().count();
++    let requested_start = char_offset.min(text_len);
++    if para
++        .field_ranges
++        .iter()
++        .any(|range| requested_start > range.start_char_idx && requested_start < range.end_char_idx)
++    {
++        return Err(HwpError::InvalidField(
++            "기존 필드 내부에는 하이퍼링크를 중첩할 수 없습니다".into(),
++        ));
++    }
++
++    let start = para.insert_text_at(requested_start, display_text);
++    let end = start.saturating_add(display_text.chars().count());
++    let positions = para.control_text_positions();
++    let insert_idx = positions
++        .iter()
++        .position(|&pos| pos > start)
++        .unwrap_or(para.controls.len());
++
++    for range in &mut para.field_ranges {
++        if range.control_idx >= insert_idx {
++            range.control_idx += 1;
++        }
++    }
++
++    let field = Field {
++        field_type: FieldType::Hyperlink,
++        command: url.to_string(),
++        properties: 0,
++        extra_properties: 0,
++        field_id,
++        ctrl_id: tags::FIELD_HYPERLINK,
++        instance_id: Some(field_id),
++        ctrl_data_name: None,
++        memo_index: 0,
++        memo_paragraphs: Vec::new(),
++        memo_text_direction: None,
++        raw_parameters_xml: None,
++        parameters: Default::default(),
++        guide_residue: None,
++    };
++
++    para.align_ctrl_data_records();
++    para.controls.insert(insert_idx, Control::Field(field));
++    para.ctrl_data_records.insert(insert_idx, None);
++
++    let new_range = FieldRange {
++        start_char_idx: start,
++        end_char_idx: end,
++        control_idx: insert_idx,
++        end_field_id: field_id,
++    };
++    let range_idx = para
++        .field_ranges
++        .iter()
++        .position(|range| {
++            range.start_char_idx > start
++                || (range.start_char_idx == start && range.control_idx > insert_idx)
++        })
++        .unwrap_or(para.field_ranges.len());
++    para.field_ranges.insert(range_idx, new_range);
++    rebuild_char_offsets(para);
++
++    Ok((start, end, insert_idx))
++}
++
+ fn insert_click_here_field_in_para(
+     para: &mut Paragraph,
+     char_offset: usize,
+--- a/src/document_core/converters/hwpx_to_hwp.rs
++++ b/src/document_core/converters/hwpx_to_hwp.rs
+@@ -1197,10 +1197,18 @@
+         **section_def = section.section_def.clone();
+         return;
+     }
++    first_para.align_ctrl_data_records();
+     first_para.controls.insert(
+         0,
+         Control::SectionDef(Box::new(section.section_def.clone())),
+     );
++    first_para.ctrl_data_records.insert(0, None);
++    // field_ranges.control_idx는 controls[]의 절대 인덱스다. SectionDef를 앞에 끼우면서
++    // 이 값을 그대로 두면 HYPERLINK/ClickHere의 FIELD_BEGIN 위치가 새 SectionDef를
++    // 가리키고, 실제 필드는 본문 뒤로 밀려 HWP 저장 후 범위가 빈 값으로 접힌다.
++    for range in &mut first_para.field_ranges {
++        range.control_idx = range.control_idx.saturating_add(1);
++    }
+     report.section_def_controls_inserted += 1;
+ }
+
+--- a/src/serializer/body_text.rs
++++ b/src/serializer/body_text.rs
+@@ -57,10 +57,19 @@
+             None
+         } else {
+             let mut clone = p.clone();
++            clone.align_ctrl_data_records();
+             clone.controls.insert(
+                 0,
+                 Control::SectionDef(Box::new(section.section_def.clone())),
+             );
++            clone.ctrl_data_records.insert(0, None);
++            // field_ranges[].control_idx is an absolute index into controls[]. The synthetic
++            // SectionDef shifts every pre-existing field control by one; keeping the old index
++            // makes the serializer associate FIELD_BEGIN with SectionDef and emits the real
++            // hyperlink/click-here begin marker after the visible text.
++            for range in &mut clone.field_ranges {
++                range.control_idx = range.control_idx.saturating_add(1);
++            }
+             Some(clone)
+         }
+     });
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -4717,6 +4717,27 @@
+     ) -> Result<String, JsValue> {
+         self.set_field_value_by_name(name, value)
+             .map_err(|e| e.into())
++    }
++
++    /// 현재 본문 위치에 하이퍼링크 필드와 표시 텍스트를 삽입한다.
++    /// 셀/글상자는 좌표/undo 계약이 별도이므로 현재 본문만 지원한다.
++    #[wasm_bindgen(js_name = insertHyperlink)]
++    pub fn insert_hyperlink_api(
++        &mut self,
++        section_idx: u32,
++        para_idx: u32,
++        char_offset: u32,
++        url: &str,
++        display_text: &str,
++    ) -> Result<String, JsValue> {
++        self.insert_hyperlink_at(
++            section_idx as usize,
++            para_idx as usize,
++            char_offset as usize,
++            url,
++            display_text,
++        )
++        .map_err(|e| e.into())
+     }
+
+     /// 현재 본문 위치에 ClickHere 누름틀 필드를 삽입한다.
+--- a/src/wasm_api/tests.rs
++++ b/src/wasm_api/tests.rs
+@@ -51,6 +51,72 @@
+             .any(|p| p.text.contains("새 문서")),
+         "재파싱 문서에 삽입 텍스트가 보존되어야 한다"
+     );
++}
++
++fn assert_body_hyperlink(label: &str, doc: &HwpDocument, url: &str, display_text: &str) {
++    use crate::model::control::{Control, FieldType};
++
++    let para = &doc.document.sections[0].paragraphs[0];
++    let (range, field) = para
++        .field_ranges
++        .iter()
++        .find_map(|range| match para.controls.get(range.control_idx) {
++            Some(Control::Field(field)) if field.field_type == FieldType::Hyperlink => {
++                Some((range, field))
++            }
++            _ => None,
++        })
++        .expect("HYPERLINK Field + FieldRange");
++    let visible: String = para
++        .text
++        .chars()
++        .skip(range.start_char_idx)
++        .take(range.end_char_idx - range.start_char_idx)
++        .collect();
++    assert_eq!(visible, display_text, "{label}: visible text range");
++    assert_eq!(field.command, url, "{label}: URL command");
++    assert_eq!(field.ctrl_id, crate::parser::tags::FIELD_HYPERLINK);
++    assert_ne!(field.field_id, 0);
++}
++
++#[test]
++fn hop_insert_hyperlink_survives_hwp_and_hwpx_roundtrips() {
++    let url = "https://example.com/docs?q=한글&mode=full";
++    let display_text = "한글 링크 열기";
++    let mut doc = HwpDocument::create_empty();
++
++    let result = doc
++        .insert_hyperlink_at(0, 0, 0, url, display_text)
++        .expect("하이퍼링크 삽입");
++    let result: Value = serde_json::from_str(&result).expect("삽입 결과 JSON");
++    assert_eq!(result["ok"], true);
++    assert_eq!(result["startOffset"], 0);
++    assert_eq!(result["charOffset"], display_text.chars().count() as u64);
++    assert_body_hyperlink("live", &doc, url, display_text);
++
++    let hwp = doc
++        .export_hwp_with_adapter_snapshot()
++        .expect("하이퍼링크 포함 HWP 저장");
++    let hwp_reopened = HwpDocument::from_bytes(&hwp).expect("HWP 재열기");
++    assert_body_hyperlink("hwp", &hwp_reopened, url, display_text);
++
++    let hwpx = doc.export_hwpx_native().expect("하이퍼링크 포함 HWPX 저장");
++    let hwpx_reopened = HwpDocument::from_bytes(&hwpx).expect("HWPX 재열기");
++    assert_body_hyperlink("hwpx", &hwpx_reopened, url, display_text);
++}
++
++#[test]
++fn hop_insert_hyperlink_rejects_empty_payloads_without_mutation() {
++    let mut doc = HwpDocument::create_empty();
++    let before = doc.document.sections[0].paragraphs[0].clone();
++    assert!(doc.insert_hyperlink_at(0, 0, 0, "", "표시").is_err());
++    assert!(doc
++        .insert_hyperlink_at(0, 0, 0, "https://example.com", "")
++        .is_err());
++    let after = &doc.document.sections[0].paragraphs[0];
++    assert_eq!(after.text, before.text);
++    assert_eq!(after.controls.len(), before.controls.len());
++    assert_eq!(after.field_ranges.len(), before.field_ranges.len());
+ }
+
+ fn issue_1481_json_usize(json: &str, key: &str) -> usize {

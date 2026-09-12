@@ -16,6 +16,11 @@ const PRINT_ROOT_ID = 'hop-print-root';
 const PRINT_STYLE_ID = 'hop-print-style';
 const PRINT_PAGE_HEIGHT_GUARD_MM = 0.1;
 
+interface PrintPageSize {
+  widthMm: number;
+  heightMm: number;
+}
+
 export async function openPrintDialog(
   document: PrintableDocument,
   options: PrintDialogOptions = {},
@@ -23,15 +28,19 @@ export async function openPrintDialog(
   const pageCount = document.pageCount;
   if (pageCount === 0) return;
 
-  const pageInfo = document.getPageInfo(0);
-  const widthMm = Math.round((pageInfo.width * 25.4) / 96);
-  const heightMm = Math.round((pageInfo.height * 25.4) / 96);
+  const pageSizes = Array.from({ length: pageCount }, (_, pageIndex) => {
+    const pageInfo = document.getPageInfo(pageIndex);
+    return {
+      widthMm: pxToMillimeters(pageInfo.width),
+      heightMm: pxToMillimeters(pageInfo.height),
+    };
+  });
+  const firstPageSize = pageSizes[0]!;
 
   const root = renderPrintDocumentShell({
     fileName: document.fileName,
     pageCount,
-    widthMm,
-    heightMm,
+    pageSizes,
   });
   for (let i = 0; i < pageCount; i += 1) {
     options.onStatus?.(`인쇄 준비 중... (${i + 1}/${pageCount})`);
@@ -67,15 +76,25 @@ export async function openPrintDialog(
 function renderPrintDocumentShell(payload: {
   fileName: string;
   pageCount: number;
-  widthMm: number;
-  heightMm: number;
+  pageSizes: PrintPageSize[];
 }): HTMLElement {
   removePrintDocument();
+
+  const firstPageSize = payload.pageSizes[0]!;
+  const pageRules = payload.pageSizes.map((size, index) => `
+    @page hop-print-page-${index + 1} { size: ${size.widthMm}mm ${size.heightMm}mm; margin: 0; }
+    #${PRINT_ROOT_ID} .hop-print-page:nth-child(${index + 1}) {
+      page: hop-print-page-${index + 1};
+      width: ${size.widthMm}mm;
+      height: calc(${size.heightMm}mm - ${PRINT_PAGE_HEIGHT_GUARD_MM}mm);
+    }
+  `).join('');
 
   const style = document.createElement('style');
   style.id = PRINT_STYLE_ID;
   style.textContent = `
-  @page { size: ${payload.widthMm}mm ${payload.heightMm}mm; margin: 0; }
+  @page { size: ${firstPageSize.widthMm}mm ${firstPageSize.heightMm}mm; margin: 0; }
+  ${pageRules}
   @media screen {
     #${PRINT_ROOT_ID} {
       display: none;
@@ -93,14 +112,12 @@ function renderPrintDocumentShell(payload: {
     }
     #${PRINT_ROOT_ID} {
       display: block !important;
-      width: ${payload.widthMm}mm;
+      width: auto;
       margin: 0 !important;
       padding: 0 !important;
       background: #fff !important;
     }
     #${PRINT_ROOT_ID} .hop-print-page {
-      width: ${payload.widthMm}mm;
-      height: calc(${payload.heightMm}mm - ${PRINT_PAGE_HEIGHT_GUARD_MM}mm);
       margin: 0 !important;
       padding: 0 !important;
       overflow: hidden;
@@ -129,6 +146,10 @@ function renderPrintDocumentShell(payload: {
   document.head.appendChild(style);
   document.body.appendChild(root);
   return root;
+}
+
+function pxToMillimeters(value: number): number {
+  return Math.round((value * 25.4) / 96);
 }
 
 function appendPrintPage(root: HTMLElement, svg: string): void {

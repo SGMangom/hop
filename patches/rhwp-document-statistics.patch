@@ -1,0 +1,239 @@
+diff --git a/src/document_core/queries/mod.rs b/src/document_core/queries/mod.rs
+index df42975..d6daad0 100644
+--- a/src/document_core/queries/mod.rs
++++ b/src/document_core/queries/mod.rs
+@@ -13,6 +13,8 @@ pub mod rendering;
+ // [#3283] `grep` 이 같은 매칭 규칙(find_matches)을 쓰도록 크레이트 내부 공개.
+ /// 주소(구역·문단·페이지)를 가진 검색 — 조판 엔진이 있어야만 가능한 질의.
+ pub mod changed_pages;
++/// 문서 분량/통계 — 편집 가능한 텍스트 범위를 재귀 집계하는 읽기 전용 질의.
++pub mod document_statistics;
+ /// 날짜·금액·수량을 주소와 함께 뽑는 추출 코어 — `grep` 과 같은 페이지 인덱스를 쓴다.
+ pub mod extract_data;
+ pub mod grep;
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+index ce0c225..af902f6 100644
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -1106,6 +1106,12 @@ impl HwpDocument {
+         self.core.get_document_info()
+     }
+
++    /// 문서 통계를 JSON 문자열로 반환한다. 문서 상태를 변경하지 않는다.
++    #[wasm_bindgen(js_name = getDocumentStatistics)]
++    pub fn get_document_statistics(&self) -> String {
++        self.core.get_document_statistics()
++    }
++
+     /// 특정 페이지의 텍스트 레이아웃 정보를 JSON 문자열로 반환한다.
+     ///
+     /// 각 TextRun의 위치, 텍스트, 글자별 X 좌표 경계값을 포함한다.
+diff --git a/src/document_core/queries/document_statistics.rs b/src/document_core/queries/document_statistics.rs
+new file mode 100644
+index 0000000..2b39ede
+--- /dev/null
++++ b/src/document_core/queries/document_statistics.rs
+@@ -0,0 +1,203 @@
++//! 문서 통계/분량 — 실제 편집 텍스트 트리를 한 번씩만 순회하는 읽기 전용 질의.
++//!
++//! 본문 문단에서 시작해 표 셀, 머리말/꼬리말, 각주/미주, 글상자와 캡션으로 재귀한다.
++//! 반복 표시되는 머리말/꼬리말을 페이지 수만큼 복제해 세지 않고, IR에 저장된 정의를 한 번만 센다.
++
++use serde::Serialize;
++
++use crate::document_core::DocumentCore;
++use crate::model::control::Control;
++use crate::model::paragraph::Paragraph;
++use crate::model::shape::ShapeObject;
++
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct DocumentStatistics {
++    pub paragraph_count: usize,
++    pub character_count_with_spaces: usize,
++    pub character_count_without_spaces: usize,
++    pub word_count: usize,
++}
++
++impl DocumentStatistics {
++    fn add_paragraph(&mut self, paragraph: &Paragraph) {
++        self.paragraph_count += 1;
++        self.character_count_with_spaces += paragraph.text.chars().count();
++        self.character_count_without_spaces += paragraph
++            .text
++            .chars()
++            .filter(|c| !c.is_whitespace())
++            .count();
++        // 한컴의 언어별 형태소 분석까지 흉내 내지 않는다. 공백 경계 기준의 안정적인 어림값이다.
++        self.word_count += paragraph.text.split_whitespace().count();
++    }
++}
++
++impl DocumentCore {
++    pub fn document_statistics(&self) -> DocumentStatistics {
++        let mut statistics = DocumentStatistics::default();
++        for section in &self.document.sections {
++            visit_paragraphs(&section.paragraphs, &mut statistics);
++        }
++        statistics
++    }
++
++    pub fn get_document_statistics(&self) -> String {
++        serde_json::to_string(&self.document_statistics())
++            .unwrap_or_else(|_| "{\"paragraphCount\":0,\"characterCountWithSpaces\":0,\"characterCountWithoutSpaces\":0,\"wordCount\":0}".to_string())
++    }
++}
++
++fn visit_paragraphs(paragraphs: &[Paragraph], statistics: &mut DocumentStatistics) {
++    for paragraph in paragraphs {
++        statistics.add_paragraph(paragraph);
++        for control in &paragraph.controls {
++            visit_control(control, statistics);
++        }
++    }
++}
++
++fn visit_control(control: &Control, statistics: &mut DocumentStatistics) {
++    match control {
++        Control::Table(table) => {
++            for cell in &table.cells {
++                visit_paragraphs(&cell.paragraphs, statistics);
++            }
++            if let Some(caption) = &table.caption {
++                visit_paragraphs(&caption.paragraphs, statistics);
++            }
++        }
++        Control::Shape(shape) => visit_shape(shape, statistics),
++        Control::Picture(picture) => {
++            if let Some(caption) = &picture.caption {
++                visit_paragraphs(&caption.paragraphs, statistics);
++            }
++        }
++        Control::Header(header) => visit_paragraphs(&header.paragraphs, statistics),
++        Control::Footer(footer) => visit_paragraphs(&footer.paragraphs, statistics),
++        Control::Footnote(note) => visit_paragraphs(&note.paragraphs, statistics),
++        Control::Endnote(note) => visit_paragraphs(&note.paragraphs, statistics),
++        _ => {}
++    }
++}
++
++fn visit_shape(shape: &ShapeObject, statistics: &mut DocumentStatistics) {
++    if let Some(text_box) = crate::document_core::helpers::get_textbox_from_shape(shape) {
++        visit_paragraphs(&text_box.paragraphs, statistics);
++    }
++    if let Some(caption) = crate::document_core::helpers::get_caption_from_shape(shape) {
++        visit_paragraphs(&caption.paragraphs, statistics);
++    }
++    if let ShapeObject::Group(group) = shape {
++        for child in &group.children {
++            visit_shape(child, statistics);
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::model::document::{Document, Section};
++    use crate::model::footnote::{Endnote, Footnote};
++    use crate::model::header_footer::{Footer, Header};
++    use crate::model::shape::{RectangleShape, TextBox};
++    use crate::model::table::{Cell, Table};
++
++    fn paragraph(text: &str) -> Paragraph {
++        Paragraph {
++            text: text.to_string(),
++            ..Default::default()
++        }
++    }
++
++    fn core_with_document(document: Document) -> DocumentCore {
++        let mut core = DocumentCore::new_empty();
++        core.set_document(document);
++        core
++    }
++
++    #[test]
++    fn counts_unicode_characters_whitespace_and_words_without_control_placeholders() {
++        let document = Document {
++            sections: vec![Section {
++                paragraphs: vec![paragraph("가 나\t다")],
++                ..Default::default()
++            }],
++            ..Default::default()
++        };
++        let statistics = core_with_document(document).document_statistics();
++        assert_eq!(statistics.paragraph_count, 1);
++        assert_eq!(statistics.character_count_with_spaces, 5);
++        assert_eq!(statistics.character_count_without_spaces, 3);
++        assert_eq!(statistics.word_count, 3);
++    }
++
++    #[test]
++    fn recursively_counts_editable_text_scopes_once() {
++        let mut host = paragraph("본문");
++
++        let mut table = Table::default();
++        table.cells.push(Cell {
++            paragraphs: vec![paragraph("표 셀")],
++            ..Default::default()
++        });
++        host.controls.push(Control::Table(Box::new(table)));
++
++        host.controls.push(Control::Header(Box::new(Header {
++            paragraphs: vec![paragraph("머리 말")],
++            ..Default::default()
++        })));
++        host.controls.push(Control::Footer(Box::new(Footer {
++            paragraphs: vec![paragraph("꼬리 말")],
++            ..Default::default()
++        })));
++        host.controls.push(Control::Footnote(Box::new(Footnote {
++            paragraphs: vec![paragraph("각주 글")],
++            ..Default::default()
++        })));
++        host.controls.push(Control::Endnote(Box::new(Endnote {
++            paragraphs: vec![paragraph("미주 글")],
++            ..Default::default()
++        })));
++
++        let mut rectangle = RectangleShape::default();
++        rectangle.drawing.text_box = Some(TextBox {
++            paragraphs: vec![paragraph("글 상자")],
++            ..Default::default()
++        });
++        host.controls
++            .push(Control::Shape(Box::new(ShapeObject::Rectangle(rectangle))));
++
++        let document = Document {
++            sections: vec![Section {
++                paragraphs: vec![host],
++                ..Default::default()
++            }],
++            ..Default::default()
++        };
++        let statistics = core_with_document(document).document_statistics();
++        assert_eq!(statistics.paragraph_count, 7);
++        assert_eq!(statistics.word_count, 13);
++        assert_eq!(statistics.character_count_with_spaces, 25);
++        assert_eq!(statistics.character_count_without_spaces, 19);
++    }
++
++    #[test]
++    fn serializes_stable_camel_case_wasm_contract() {
++        let document = Document {
++            sections: vec![Section {
++                paragraphs: vec![paragraph("두 단어")],
++                ..Default::default()
++            }],
++            ..Default::default()
++        };
++        let value: serde_json::Value =
++            serde_json::from_str(&core_with_document(document).get_document_statistics())
++                .expect("statistics json");
++        assert_eq!(value["paragraphCount"], 1);
++        assert_eq!(value["characterCountWithSpaces"], 4);
++        assert_eq!(value["characterCountWithoutSpaces"], 3);
++        assert_eq!(value["wordCount"], 2);
++    }
++}

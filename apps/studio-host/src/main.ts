@@ -17,15 +17,19 @@ import {
 import { Toolbar } from '@/ui/toolbar';
 import { CommandPalette, ContextMenu, MenuBar } from '@/upstream/ui';
 import { loadWebFonts } from '@/core/font-loader';
-import { loadStoredLocalFonts } from '@/core/local-fonts';
+import { detectLocalFonts, loadStoredLocalFonts } from '@/core/local-fonts';
 import { isSupportedDocumentPath } from '@/core/document-files';
 import { confirmSaveBeforeReplacingDocument } from '@/upstream/commands';
 import { enhanceCustomSelects } from '@/ui/custom-select';
 import { UpdateNotice, type UpdateNoticeActions } from '@/ui/update-notice';
 import { HomeScreen } from '@/ui/home-screen';
+import { installToolbarCommandStateSync } from '@/ui/toolbar-command-state';
+import { installSupplementalShortcuts } from '@/ui/shortcut-augment';
+import { formatStatusPageLabel } from '@/ui/status-page-label';
 import type { DesktopBridgeApi } from '@/core/tauri-bridge';
 import { createCommandRuntime } from './host/command-runtime';
 import { createRendererSession } from './host/renderer-session';
+import { installEmbedRuntime } from '@/upstream/embed';
 
 const wasm = createBridge();
 const eventBus = new EventBus();
@@ -118,6 +122,9 @@ async function initialize(): Promise<void> {
       canvasView.getVirtualScroll(),
       canvasView.getViewportManager(),
     );
+    if (import.meta.env.DEV) {
+      (window as any).__inputHandler = inputHandler;
+    }
     inputHandler.setEditMode(commandRuntime.getEditMode());
 
     toolbar = new Toolbar(document.getElementById('style-bar')!, wasm, eventBus, dispatcher);
@@ -153,6 +160,8 @@ async function initialize(): Promise<void> {
         if (cmd) dispatcher.dispatch(cmd, { anchorEl: btn as HTMLElement });
       });
     });
+    installToolbarCommandStateSync(document, eventBus, dispatcher);
+    installSupplementalShortcuts(document, dispatcher);
 
     // 스플릿 버튼 드롭다운 메뉴
     document.querySelectorAll('.tb-split').forEach(split => {
@@ -198,6 +207,18 @@ async function initialize(): Promise<void> {
       },
       onUpdateState: (state) => {
         updateNotice?.setState(state);
+      },
+      onHftFontsUpdated: async () => {
+        await detectLocalFonts({ force: true });
+        await loadWebFonts(currentDocumentFonts);
+        toolbar?.initFontDropdown(currentDocumentFonts);
+        if (wasm.pageCount > 0) {
+          // Native cache 갱신으로 같은 family의 derived face가 교체되거나 이전 load failure가
+          // 회복될 수 있다. CanvasKit 문서 로컬 font cache를 버린 뒤 view revision 경로가
+          // preflight + prepareLocalFonts를 다시 수행하게 한다.
+          rendererSession.invalidateDocument();
+          eventBus.emit('document-view-changed', 'hft-fonts-updated');
+        }
       },
     }).catch((error) => {
       console.error('[main] desktop event setup failed:', error);
@@ -410,6 +431,7 @@ function setupZoomControls(): void {
 }
 
 let totalSections = 1;
+let currentDocumentFonts: string[] = [];
 
 function setupEventListeners(): void {
   eventBus.on('document-changed', (reason) => {
@@ -439,15 +461,17 @@ function setupEventListeners(): void {
 
   eventBus.on('current-page-changed', (page, _total) => {
     const pageIdx = page as number;
-    sbPage().textContent = `${pageIdx + 1} / ${_total} 쪽`;
+    let logicalPageNumber: number | undefined;
 
     // 구역 정보: 현재 페이지의 sectionIndex로 갱신
     if (wasm.pageCount > 0) {
       try {
         const pageInfo = wasm.getPageInfo(pageIdx);
+        logicalPageNumber = pageInfo.pageNumber;
         sbSection().textContent = `구역: ${pageInfo.sectionIndex + 1} / ${totalSections}`;
       } catch { /* 무시 */ }
     }
+    sbPage().textContent = formatStatusPageLabel(pageIdx, _total as number, logicalPageNumber);
   });
 
   eventBus.on('zoom-level-display', (zoom) => {
@@ -478,7 +502,11 @@ function setupEventListeners(): void {
   const rotateGroup = document.querySelector('.tb-rotate-group') as HTMLElement | null;
   if (rotateGroup) {
     eventBus.on('picture-object-selection-changed', (selected) => {
-      rotateGroup.style.display = (selected as boolean) ? '' : 'none';
+      // Match the rotation commands: equations cannot rotate. Avoid shifting
+      // the page between the first and second click when editing a formula.
+      const ref = inputHandler?.getSelectedPictureRef();
+      const canTransform = selected && ref && !['equation', 'group', 'line'].includes(ref.type);
+      rotateGroup.style.display = canTransform ? '' : 'none';
     });
   }
 
@@ -520,6 +548,7 @@ async function initializeDocument(
 ): Promise<void> {
   const msg = sbMessage();
   try {
+    currentDocumentFonts = [...(docInfo.fontsUsed ?? [])];
     canvasView?.prepareDocumentLoad();
     if (docInfo.fontsUsed?.length) {
       await loadWebFonts(docInfo.fontsUsed, (loaded, total) => {
@@ -609,4 +638,87 @@ eventBus.on('equation-edit-request', () => {
   dispatcher.dispatch('insert:equation-edit');
 });
 
-initialize();
+const initPromise = initialize();
+
+installEmbedRuntime({
+  hostWindow: window,
+  parentWindow: window.parent,
+  handlers: {
+    async ready() {
+      await initPromise;
+      return true;
+    },
+    async loadFile(data, fileName, skipUnsavedGuard) {
+      await initPromise;
+      if (!await canReplaceCurrentDocument(skipUnsavedGuard)) {
+        throw new Error('문서 열기가 취소되었습니다.');
+      }
+      const startedAt = performance.now();
+      const docInfo = wasm.loadDocument(data, fileName);
+      await initializeDocument(
+        docInfo,
+        `${fileName} — ${docInfo.pageCount}페이지 (${(performance.now() - startedAt).toFixed(1)}ms)`,
+      );
+      return { pageCount: wasm.pageCount };
+    },
+    async pageCount() {
+      await initPromise;
+      return wasm.pageCount;
+    },
+    async getRendererDiagnostics(pageIndex) {
+      await initPromise;
+      return {
+        schemaVersion: 1 as const,
+        request: null,
+        initialized: true,
+        initializationError: null,
+        effectiveBackend: null,
+        backendFallbackReason: null,
+        selection: canvasView?.getRendererSessionDiagnostics() ?? null,
+        page: {
+          index: pageIndex,
+          canvaskit: canvasView?.getCanvasKitRenderDiagnostics(pageIndex) ?? null,
+        },
+      };
+    },
+    async getPageSvg(pageIndex) {
+      await initPromise;
+      return wasm.renderPageSvg(pageIndex);
+    },
+    async exportHwp() {
+      await initPromise;
+      return wasm.exportHwp();
+    },
+    async exportHwpx() {
+      await initPromise;
+      return wasm.exportHwpx();
+    },
+    async exportHml() {
+      await initPromise;
+      return wasm.exportHml();
+    },
+    async getHmlSaveState() {
+      await initPromise;
+      return wasm.getHmlSaveState();
+    },
+    async exportHwpVerify() {
+      await initPromise;
+      return JSON.parse(wasm.exportHwpVerify());
+    },
+    async notifySaved(fileName) {
+      await initPromise;
+      const wasDirty = documentState.isDirty();
+      documentState.markClean(fileName ? `host-save:${fileName}` : 'host-save');
+      return { ok: true as const, wasDirty };
+    },
+  },
+});
+
+eventBus.on('document-dirty-changed', (payload) => {
+  const dirty = typeof payload === 'object' && payload !== null && 'dirty' in payload
+    ? Boolean((payload as { dirty: unknown }).dirty)
+    : documentState.isDirty();
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'solq-rhwp-dirty', dirty }, window.location.origin);
+  }
+});

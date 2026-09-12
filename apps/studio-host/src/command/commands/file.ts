@@ -11,6 +11,7 @@ type DesktopFileBridge = Pick<
   | 'createNewWindow'
   | 'saveDocumentFromCommand'
   | 'saveDocumentAsFromCommand'
+  | 'saveDocumentAsFormatFromCommand'
   | 'exportPdfFromCommand'
   | 'printCurrentWebview'
 >;
@@ -26,8 +27,6 @@ const upstreamById = new Map(upstreamFileCommands.map((command) => [command.id, 
 // HOP owns save format choices and PDF export through native paths. Browser-only
 // commands must be reviewed explicitly instead of arriving through group merge.
 const browserOnlyFileCommands = new Set([
-  'file:save-as-hwp',
-  'file:save-as-hwpx',
   'file:print-to-pdf',
 ]);
 const adoptedUpstreamCommands = upstreamFileCommands.filter(
@@ -41,6 +40,7 @@ function desktopBridge(wasm: unknown): DesktopFileBridge | null {
     && typeof candidate.createNewWindow === 'function'
     && typeof candidate.saveDocumentFromCommand === 'function'
     && typeof candidate.saveDocumentAsFromCommand === 'function'
+    && typeof candidate.saveDocumentAsFormatFromCommand === 'function'
     && typeof candidate.exportPdfFromCommand === 'function'
     && typeof candidate.printCurrentWebview === 'function'
     ? candidate as DesktopFileBridge
@@ -156,6 +156,32 @@ const desktopCommands = new Map<string, CommandDef>([
     await runDesktopAction(services, '다른 이름으로 저장', async () => {
       emitStatus(services, '다른 이름으로 저장 중...');
       const result = await desktop.saveDocumentAsFromCommand();
+      if (result) {
+        services.eventBus.emit('desktop-document-saved', result);
+        emitStatus(services, '저장 완료');
+      }
+    });
+  })],
+  ['file:save-as-hwp', withDesktopOverride('file:save-as-hwp', async (services) => {
+    const desktop = desktopBridge(services.wasm);
+    if (!desktop) return upstream('file:save-as-hwp').execute(services);
+
+    await runDesktopAction(services, 'HWP 형식으로 저장', async () => {
+      emitStatus(services, 'HWP 형식으로 저장 중...');
+      const result = await desktop.saveDocumentAsFormatFromCommand('hwp');
+      if (result) {
+        services.eventBus.emit('desktop-document-saved', result);
+        emitStatus(services, '저장 완료');
+      }
+    });
+  })],
+  ['file:save-as-hwpx', withDesktopOverride('file:save-as-hwpx', async (services) => {
+    const desktop = desktopBridge(services.wasm);
+    if (!desktop) return upstream('file:save-as-hwpx').execute(services);
+
+    await runDesktopAction(services, 'HWPX 형식으로 저장', async () => {
+      emitStatus(services, 'HWPX 형식으로 저장 중...');
+      const result = await desktop.saveDocumentAsFormatFromCommand('hwpx');
       if (result) {
         services.eventBus.emit('desktop-document-saved', result);
         emitStatus(services, '저장 완료');

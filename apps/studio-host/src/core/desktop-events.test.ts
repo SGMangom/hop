@@ -74,6 +74,27 @@ describe('desktop events', () => {
     expect(eventBus.emit).toHaveBeenCalledWith('desktop-document-loaded', loaded);
   });
 
+  it('refreshes HFT fonts initially and when the native cache finishes', async () => {
+    const { eventHandlers } = installTauriMocks();
+    (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };
+    installDocumentStub();
+    const onHftFontsUpdated = vi.fn().mockResolvedValue(undefined);
+
+    await setupDesktopEvents({
+      bridge: { takePendingOpenPaths: vi.fn().mockResolvedValue([]) },
+      dispatcher: { dispatch: vi.fn() } as never,
+      eventBus: { emit: vi.fn() } as never,
+      setMessage: vi.fn(),
+      onUpdateState: vi.fn(),
+      onHftFontsUpdated,
+    });
+
+    expect(onHftFontsUpdated).toHaveBeenCalledTimes(1);
+    await eventHandlers.get('hop-hft-fonts-updated')?.({ payload: { faceCount: 177 } });
+    await Promise.resolve();
+    expect(onHftFontsUpdated).toHaveBeenCalledTimes(2);
+  });
+
   it('reports unsupported dropped/opened paths without calling the bridge', async () => {
     const { windowHandlers } = installTauriMocks();
     (globalThis as { window?: unknown }).window = { __TAURI_INTERNALS__: {} };

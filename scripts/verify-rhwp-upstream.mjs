@@ -100,9 +100,14 @@ async function verifyCargoPatches(lock, cargoRoot, cargoLock) {
 
 async function verifyFontAssets() {
   const fontCatalog = await readFile(join(repoRoot, 'apps/studio-host/src/core/font-catalog.ts'), 'utf8');
-  const names = new Set(Array.from(fontCatalog.matchAll(/['"]\/fonts\/([^'"]+)['"]/g), (m) => m[1]));
+  const names = new Set(Array.from(fontCatalog.matchAll(/['"](?:\.\/|\/)fonts\/([^'"]+)['"]/g), (m) => m[1]));
   assert.ok(names.size > 0, 'active font catalog must reference packaged fonts');
-  for (const name of names) await access(join(repoRoot, 'assets/fonts', name));
+  for (const name of names) {
+    const path = name.startsWith('ComputerModern-')
+      ? join(repoRoot, 'assets/fonts/computer-modern', name)
+      : join(repoRoot, 'assets/fonts', name);
+    await access(path);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

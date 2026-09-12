@@ -1,0 +1,1753 @@
+--- a/src/renderer/equation/canvas_render.rs
++++ b/src/renderer/equation/canvas_render.rs
+@@ -5,6 +5,7 @@
+
+ use super::ast::MatrixStyle;
+ use super::layout::*;
++use super::metrics::{delimiter_width, text_metrics};
+ use super::symbols::{DecoKind, FontStyleKind};
+ use web_sys::CanvasRenderingContext2d;
+
+@@ -17,6 +18,8 @@
+     color: &str,
+     base_font_size: f64,
+ ) {
++    ctx.set_text_align("start");
++    ctx.set_text_baseline("alphabetic");
+     // 진입점 default: italic=true (hwpeq 변수 기본 스타일).
+     // FontStyle::Roman(`rm`) 적용 영역에서는 자식 렌더링 시 italic=false 로 전환된다.
+     render_box(
+@@ -62,44 +65,36 @@
+                     '\u{3000}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{AC00}'..='\u{D7AF}'
+                 )
+             });
+-            set_font(ctx, fi, !has_cjk && italic, bold);
+-            ctx.set_fill_style_str(color);
+-            let _ = ctx.fill_text(text, x, y + lb.baseline);
++            set_font(ctx, fi, !has_cjk && italic && !bold, bold);
++            ctx.set_fill_style_str(color);
++            let left_pad = text_metrics(text, fi, !has_cjk && italic && !bold, bold).left_pad;
++            let _ = ctx.fill_text(text, x + left_pad, y + lb.baseline);
+         }
+         LayoutKind::Number(text) => {
+-            // [Issue #900] svg_render.rs Number arm 과 동기화 — fs 사용.
+-            let fi = fs;
+-            set_font(ctx, fi, false, bold);
+-            ctx.set_fill_style_str(color);
+-            let _ = ctx.fill_text(text, x, y + lb.baseline);
++            set_font(ctx, fs, false, bold);
++            ctx.set_fill_style_str(color);
++            let left_pad = text_metrics(text, fs, false, bold).left_pad;
++            let _ = ctx.fill_text(text, x + left_pad, y + lb.baseline);
+         }
+         LayoutKind::Symbol(text) => {
+-            // [Issue #900] svg_render.rs Symbol arm 과 동기화 — fs 사용.
+-            let fi = fs;
+-            set_font(ctx, fi, false, false);
+-            ctx.set_fill_style_str(color);
+-            ctx.set_text_align("center");
+-            let _ = ctx.fill_text(text, x + lb.width / 2.0, y + lb.baseline);
+-            ctx.set_text_align("start");
++            set_font(ctx, fs, false, false);
++            ctx.set_fill_style_str(color);
++            let metrics = text_metrics(text, fs, false, false);
++            let text_x = x + (lb.width - metrics.width) / 2.0 + metrics.left_pad;
++            let _ = ctx.fill_text(text, text_x, y + lb.baseline);
+         }
+         LayoutKind::MathSymbol(text) => {
+-            // [Issue #900] svg_render.rs MathSymbol arm 과 동기화 (commit 292dbbef).
+-            // Task #1317: 적분 기호(∫)는 폰트 text 가 아닌 stroke path 로 렌더(geom SSOT,
+-            // svg_render.rs 와 동일). 그 외 MathSymbol 은 부모 전달 fs 로 text 렌더.
+-            if super::layout::is_integral_symbol(text) {
+-                draw_integral(ctx, x, y, fs, color);
+-            } else {
+-                set_font(ctx, fs, false, false);
+-                ctx.set_fill_style_str(color);
+-                let _ = ctx.fill_text(text, x, y + lb.baseline);
+-            }
++            let glyph_fs = if is_integral_symbol(text) { fs * INTEGRAL_SCALE } else { fs };
++            set_font(ctx, glyph_fs, false, false);
++            ctx.set_fill_style_str(color);
++            let left_pad = text_metrics(text, glyph_fs, false, false).left_pad;
++            let _ = ctx.fill_text(text, x + left_pad, y + lb.baseline);
+         }
+         LayoutKind::Function(name) => {
+-            // [Issue #900] svg_render.rs Function arm 과 동기화 — fs 사용.
+-            let fi = fs;
+-            set_font(ctx, fi, false, false);
+-            ctx.set_fill_style_str(color);
+-            let _ = ctx.fill_text(name, x, y + lb.baseline);
++            set_font(ctx, fs, false, false);
++            ctx.set_fill_style_str(color);
++            let left_pad = text_metrics(name, fs, false, false).left_pad;
++            let _ = ctx.fill_text(name, x + left_pad, y + lb.baseline);
+         }
+         LayoutKind::Fraction { numer, denom } => {
+             render_box(ctx, numer, x, y, color, fs, italic, bold);
+@@ -172,21 +167,13 @@
+                 };
+             set_font(ctx, op_fs, false, false);
+             ctx.set_fill_style_str(color);
+-            if is_integral {
+-                // Task #1317: 적분 기호는 stroke path 로 렌더(geom SSOT).
+-                draw_integral(ctx, x, y, fs, color);
++            let metrics = text_metrics(symbol, op_fs, false, false);
++            let op_x = if is_integral {
++                x + metrics.left_pad
+             } else {
+-                let sup_h = sup.as_ref().map(|b| b.height + fs * 0.05).unwrap_or(0.0);
+-                // Task #1233: 연산자는 max_w(= lb.width - trailing pad)에 중앙정렬 →
+-                // pad 전체가 순수 trailing 간격이 되고 첨자(max_w 중앙정렬)와 정렬된다.
+-                // #1304: 연산자 폭은 layout 의 estimate_text_width 와 동일 기준을 써야 첨자와
+-                // 가로 중심이 맞는다 (기존 estimate_op_width 의 0.6 과소추정 → ∑ 우측 치우침).
+-                let center_w = lb.width - fs * super::layout::BIG_OP_TRAIL_PAD;
+-                let op_x =
+-                    x + (center_w - super::layout::estimate_text_width(symbol, op_fs, false)) / 2.0;
+-                let op_y = y + sup_h + op_fs * 0.8;
+-                let _ = ctx.fill_text(symbol, op_x, op_y);
+-            }
++                x + (lb.width - fs * BIG_OP_TRAIL_PAD - metrics.width) / 2.0 + metrics.left_pad
++            };
++            let _ = ctx.fill_text(symbol, op_x, y + lb.baseline);
+             // 위/아래 첨자 — LayoutBox 자식 좌표 사용 (적분/일반 공통)
+             if let Some(sup_box) = sup {
+                 render_box(ctx, sup_box, x, y, color, fs * SCRIPT_SCALE, false, false);
+@@ -203,7 +190,8 @@
+             let fi = fs;
+             set_font(ctx, fi, false, false);
+             ctx.set_fill_style_str(color);
+-            let _ = ctx.fill_text(name, x, y + fi * 0.8);
++            let left_pad = text_metrics(name, fi, false, false).left_pad;
++            let _ = ctx.fill_text(name, x + left_pad, y + lb.baseline);
+             if let Some(sub_box) = sub {
+                 render_box(ctx, sub_box, x, y, color, fs * SCRIPT_SCALE, false, false);
+             }
+@@ -249,26 +237,27 @@
+         }
+         LayoutKind::Paren { left, right, body } => {
+             // 텍스트 높이 파렌(`(`, `)`)은 폰트 글리프로 렌더, 그 외는 path. (Task #283)
+-            let use_glyph = lb.height <= fs * 1.2;
+-            let paren_w = if use_glyph { fs * 0.333 } else { fs * 0.27 };
++            let use_glyph = body.height <= fs * 1.2;
++            let left_w = delimiter_width(left, fs, body.height);
++            let right_w = delimiter_width(right, fs, body.height);
+             if !left.is_empty() {
+                 if use_glyph && (left == "(" || left == ")") {
+                     set_font(ctx, fs, false, false);
+                     ctx.set_fill_style_str(color);
+-                    let _ = ctx.fill_text(left, x, y + lb.baseline);
++                    let _ = ctx.fill_text(left, x + text_metrics(left, fs, false, false).left_pad, y + lb.baseline);
+                 } else {
+-                    draw_stretch_bracket(ctx, left, x, y, paren_w, lb.height, color, fs);
++                    draw_stretch_bracket(ctx, left, x, y, left_w, lb.height, color, fs);
+                 }
+             }
+             render_box(ctx, body, x, y, color, fs, italic, bold);
+             if !right.is_empty() {
+-                let right_x = x + lb.width - paren_w;
++                let right_x = x + lb.width - right_w;
+                 if use_glyph && (right == "(" || right == ")") {
+                     set_font(ctx, fs, false, false);
+                     ctx.set_fill_style_str(color);
+-                    let _ = ctx.fill_text(right, right_x, y + lb.baseline);
++                    let _ = ctx.fill_text(right, right_x + text_metrics(right, fs, false, false).left_pad, y + lb.baseline);
+                 } else {
+-                    draw_stretch_bracket(ctx, right, right_x, y, paren_w, lb.height, color, fs);
++                    draw_stretch_bracket(ctx, right, right_x, y, right_w, lb.height, color, fs);
+                 }
+             }
+         }
+@@ -295,39 +284,13 @@
+ }
+
+ fn set_font(ctx: &CanvasRenderingContext2d, size: f64, italic: bool, bold: bool) {
+-    let style = if italic { "italic " } else { "" };
++    let style = if italic && !bold { "italic " } else { "" };
+     let weight = if bold { "bold " } else { "" };
+     // svg_render.rs 의 EQ_FONT_FAMILY 와 동일 스택 유지. (Task #280)
+     ctx.set_font(&format!(
+-        "{}{}{:.1}px 'Latin Modern Math', 'STIX Two Text', 'STIX Two Math', 'Times New Roman', 'Times', serif",
++        "{}{}{:.2}px 'Computer Modern', serif",
+         style, weight, size,
+     ));
+-}
+-
+-/// 적분 기호(∫)를 stroke path 로 렌더 (Task #1317).
+-///
+-/// svg_render.rs 의 `integral_path` 와 동일한 `integral_geom` 기하·곡선을 사용해
+-/// SVG/Canvas 가 픽셀 단위로 정합한다. 폰트에 의존하지 않으므로 글리프 bbox 가
+-/// 결정적이며 상·하한 attach point(동일 geom)와 어긋나지 않는다.
+-fn draw_integral(ctx: &CanvasRenderingContext2d, x: f64, y: f64, fs: f64, color: &str) {
+-    let g = integral_geom(fs);
+-    let h = g.bottom_y - g.top_y;
+-    let p0x = x + g.bottom_hook_x;
+-    let p0y = y + g.bottom_y;
+-    let p3x = x + g.top_hook_x;
+-    let p3y = y + g.top_y;
+-    let c1x = x + g.width * 1.02;
+-    let c1y = y + g.bottom_y - h * 0.30;
+-    let c2x = x - g.width * 0.10;
+-    let c2y = y + g.top_y + h * 0.30;
+-    ctx.set_stroke_style_str(color);
+-    ctx.set_line_width(g.stroke_w);
+-    ctx.set_line_cap("round");
+-    ctx.begin_path();
+-    ctx.move_to(p0x, p0y);
+-    ctx.bezier_curve_to(c1x, c1y, c2x, c2y, p3x, p3y);
+-    ctx.stroke();
+-    ctx.set_line_cap("butt");
+ }
+
+ /// 늘림 괄호 렌더링
+--- a/src/renderer/equation/layout.rs
++++ b/src/renderer/equation/layout.rs
+@@ -4,6 +4,7 @@
+ //! 각 요소의 크기와 위치를 계산한다.
+
+ use super::ast::*;
++use super::metrics::{delimiter_width, has_cjk, text_metrics};
+
+ /// 수식 레이아웃 박스
+ #[derive(Debug, Clone, serde::Serialize)]
+@@ -124,6 +125,11 @@
+     pub font_size: f64,
+ }
+
++struct StyledLayout {
++    italic: bool,
++    bold: bool,
++}
++
+ /// 비율 상수
+ pub(crate) const SCRIPT_SCALE: f64 = 0.7; // 첨자 크기 비율
+ const FRAC_LINE_PAD: f64 = 0.2; // 분수선 상하 여백 (font_size 비율)
+@@ -135,44 +141,6 @@
+ /// 적분 글리프는 ∑/∏ 보다 세로로 길게 그려져야 정답(한글 2022)과 정합한다. BIG_OP_SCALE
+ /// (1.5) 로는 글리프가 작아 상·하한이 기호와 벌어져 보이므로 적분만 별도 스케일을 쓴다.
+ pub(crate) const INTEGRAL_SCALE: f64 = 2.5;
+-
+-/// 적분 글리프 path 기하 — Task #1317.
+-///
+-/// 적분기호(∫)를 폰트 `<text>` 가 아닌 stroke path 로 그릴 때의 글리프 형상과,
+-/// layout 의 상·하한 attach point 가 **공유하는 단일 기준(SSOT)**. SVG/Canvas/Skia 가
+-/// 동일한 path·attach point 를 써서 폰트 대체에 무관하게 정합한다.
+-///
+-/// 모든 좌표는 글리프 박스(좌상단 원점, 높이 = `fs*INTEGRAL_SCALE`) 기준 상대 px 이며,
+-/// y 는 아래로 증가한다. 비율은 정답(한글 2022) `pdf/3-10월_교육_통합_2022.pdf` 9p 적분
+-/// (`∫_0^2(-2x^2+6x)dx`) 시각 정합 기준.
+-#[derive(Clone, Copy, Debug)]
+-pub(crate) struct IntegralGeom {
+-    /// 글리프 가로 폭(상·하 갈고리 포함, trailing pad 제외)
+-    pub width: f64,
+-    /// 줄기 stroke 두께
+-    pub stroke_w: f64,
+-    /// path 상단(상단 갈고리 끝) y
+-    pub top_y: f64,
+-    /// path 하단(하단 갈고리 끝) y
+-    pub bottom_y: f64,
+-    /// 상단 갈고리 우측 끝 x — 상한(sup) attach 기준
+-    pub top_hook_x: f64,
+-    /// 하단 갈고리 좌측 끝 x — 하한(sub) attach 기준
+-    pub bottom_hook_x: f64,
+-}
+-
+-/// 글꼴 크기 `fs` 에 대한 적분 글리프 기하를 산출한다(SSOT).
+-pub(crate) fn integral_geom(fs: f64) -> IntegralGeom {
+-    let h = fs * INTEGRAL_SCALE;
+-    IntegralGeom {
+-        width: fs * 0.52,
+-        stroke_w: fs * 0.06,
+-        top_y: h * 0.04,
+-        bottom_y: h * 0.96,
+-        top_hook_x: fs * 0.50,
+-        bottom_hook_x: fs * 0.04,
+-    }
+-}
+
+ /// 큰 연산자(Σ/∏/∫) 뒤 피연산자와의 trailing 간격 (font_size 비율) — Task #1233.
+ /// layout_row 는 형제를 간격 0으로 붙이므로, 큰 연산자 box width 에 이 trailing 공백을
+@@ -200,9 +168,11 @@
+
+     /// AST를 레이아웃 박스로 변환
+     pub fn layout(&self, node: &EqNode) -> LayoutBox {
+-        self.layout_node(node, self.font_size)
+-    }
+-
++        StyledLayout { italic: true, bold: false }.layout_node(node, self.font_size)
++    }
++}
++
++impl StyledLayout {
+     fn layout_node(&self, node: &EqNode, fs: f64) -> LayoutBox {
+         match node {
+             EqNode::Row(children) => self.layout_row(children, fs),
+@@ -303,91 +273,40 @@
+         }
+     }
+
++    fn text_box(&self, text: &str, fs: f64, italic: bool, bold: bool, kind: LayoutKind) -> LayoutBox {
++        let m = text_metrics(text, fs, italic, bold);
++        // Keep the normal strut, but grow it for CM ink (notably descenders and operators).
++        let baseline = (fs * TEXT_BASELINE).max(m.ascent);
++        LayoutBox { x: 0.0, y: 0.0, width: m.width,
++            height: baseline + (fs * (1.0 - TEXT_BASELINE)).max(m.descent), baseline, kind }
++    }
++
+     fn layout_text(&self, text: &str, fs: f64) -> LayoutBox {
+-        // CJK/한글 텍스트는 이탤릭이 아니므로 italic 보정 제외
+-        let has_cjk = text.chars().any(|c| {
+-            matches!(c,
+-                '\u{3000}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{AC00}'..='\u{D7AF}'
+-            )
+-        });
+-        let w = estimate_text_width(text, fs, !has_cjk);
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: w,
+-            height: fs,
+-            baseline: fs * 0.8,
+-            kind: LayoutKind::Text(text.to_string()),
+-        }
++        self.text_box(text, fs, self.italic && !has_cjk(text), self.bold, LayoutKind::Text(text.into()))
+     }
+
+     fn layout_number(&self, text: &str, fs: f64) -> LayoutBox {
+-        let w = estimate_text_width(text, fs, false);
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: w,
+-            height: fs,
+-            baseline: fs * 0.8,
+-            kind: LayoutKind::Number(text.to_string()),
+-        }
++        self.text_box(text, fs, false, self.bold, LayoutKind::Number(text.into()))
+     }
+
+     fn layout_symbol(&self, text: &str, fs: f64) -> LayoutBox {
+-        let w = estimate_text_width(text, fs, false);
+-        // 연산자 좌우 여백
+-        let pad = if matches!(text, "+" | "-" | "=" | "<" | ">" | "×" | "÷") {
+-            fs * 0.15
+-        } else {
+-            fs * 0.05
+-        };
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: w + pad * 2.0,
+-            height: fs,
+-            baseline: fs * 0.8,
+-            kind: LayoutKind::Symbol(text.to_string()),
+-        }
++        let mut b = self.text_box(text, fs, false, false, LayoutKind::Symbol(text.into()));
++        let pad = if matches!(text, "+" | "-" | "=" | "<" | ">" | "×" | "÷") { 0.15 } else { 0.05 };
++        b.width += fs * pad * 2.0;
++        b
+     }
+
+     fn layout_math_symbol(&self, text: &str, fs: f64) -> LayoutBox {
+-        // 적분 기호: 큰 크기로 렌더링 (INTEGRAL_SCALE 적용 — Task #1313)
+-        // Task #1317: 글리프를 path 로 그리므로 advance 는 path 폭(geom.width)을 쓴다.
+-        if is_integral_symbol(text) {
+-            let op_fs = fs * INTEGRAL_SCALE;
+-            let geom = integral_geom(fs);
+-            return LayoutBox {
+-                x: 0.0,
+-                y: 0.0,
+-                // Task #1233: 첨자 없는 bare 적분도 뒤 피연산자와 trailing 간격 유지.
+-                width: geom.width + fs * BIG_OP_TRAIL_PAD,
+-                height: op_fs,
+-                baseline: op_fs * 0.7, // 적분 기호 baseline: 기호 높이의 70%
+-                kind: LayoutKind::MathSymbol(text.to_string()),
+-            };
+-        }
+-        let w = estimate_text_width(text, fs, false);
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: w,
+-            height: fs,
+-            baseline: fs * 0.8,
+-            kind: LayoutKind::MathSymbol(text.to_string()),
+-        }
++        let glyph_fs = if is_integral_symbol(text) { fs * INTEGRAL_SCALE } else { fs };
++        let mut b = self.text_box(text, glyph_fs, false, false, LayoutKind::MathSymbol(text.into()));
++        if is_integral_symbol(text) { b.width += fs * BIG_OP_TRAIL_PAD; }
++        b
+     }
+
+     fn layout_function(&self, name: &str, fs: f64) -> LayoutBox {
+-        let w = estimate_text_width(name, fs, false);
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: w + fs * 0.02,
+-            height: fs,
+-            baseline: fs * 0.8,
+-            kind: LayoutKind::Function(name.to_string()),
+-        }
++        let mut b = self.text_box(name, fs, false, false, LayoutKind::Function(name.into()));
++        b.width += fs * 0.02;
++        b
+     }
+
+     fn layout_fraction(&self, numer: &EqNode, denom: &EqNode, fs: f64) -> LayoutBox {
+@@ -498,196 +417,54 @@
+     }
+
+     fn layout_superscript(&self, base: &EqNode, sup: &EqNode, fs: f64) -> LayoutBox {
+-        let b = self.layout_node(base, fs);
+-        let s = self.layout_node(sup, fs * SCRIPT_SCALE);
+-
+-        // sup_shift: 기준선으로부터 위첨자 상단까지의 거리 (양수 = base 상단 아래)
+-        let sup_shift = b.baseline - s.height * 0.7;
+-
+-        let (base_y, sup_y, total_h);
+-        if sup_shift >= 0.0 {
+-            // [Task #1300] 위첨자 상단을 base 상단에 맞춘다 (한컴 정합).
+-            // 기존엔 base 를 sup_shift(=b.baseline 비례) 만큼 아래로 밀어 위첨자를
+-            // 박스 최상단에 두었는데, 키 큰 base(괄호 분수 등)에서 위첨자가 base 상단
+-            // 위로 과하게 치솟아 윗줄을 침범했다(#1300). base 를 밀지 않고(상단 정렬)
+-            // 위첨자 상단이 base 상단과 같은 높이에 오도록 한다.
+-            // base 가 sup 보다 낮은 경우만 sup 를 담도록 base 를 내린다.
+-            sup_y = 0.0;
+-            base_y = (s.height - b.height).max(0.0);
+-            total_h = (base_y + b.height).max(s.height);
+-        } else {
+-            // 위첨자가 base 상단 위로 확장 — sup를 상단에, base를 |sup_shift|만큼 내림
+-            sup_y = 0.0;
+-            base_y = -sup_shift;
+-            total_h = (base_y + b.height).max(s.height);
+-        }
+-
+-        let mut base_box = b;
+-        base_box.x = 0.0;
+-        base_box.y = base_y;
+-
+-        let mut sup_box = s;
+-        sup_box.x = base_box.width;
+-        sup_box.y = sup_y;
+-
+-        let total_w = base_box.width + sup_box.width;
+-
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: total_w,
+-            height: total_h,
+-            baseline: base_box.y + base_box.baseline,
+-            kind: LayoutKind::Superscript {
+-                base: Box::new(base_box),
+-                sup: Box::new(sup_box),
+-            },
+-        }
++        self.layout_scripts(base, None, Some(sup), fs)
+     }
+
+     fn layout_subscript(&self, base: &EqNode, sub: &EqNode, fs: f64) -> LayoutBox {
+-        let b = self.layout_node(base, fs);
+-        let s = self.layout_node(sub, fs * SCRIPT_SCALE);
+-
+-        let sub_shift = b.baseline * 0.4;
+-        let total_h = (b.height).max(sub_shift + s.height);
+-
+-        let mut base_box = b;
+-        base_box.x = 0.0;
+-        base_box.y = 0.0;
+-
+-        let mut sub_box = s;
+-        sub_box.x = base_box.width;
+-        sub_box.y = sub_shift;
+-
+-        let total_w = base_box.width + sub_box.width;
+-
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: total_w,
+-            height: total_h,
+-            baseline: base_box.baseline,
+-            kind: LayoutKind::Subscript {
+-                base: Box::new(base_box),
+-                sub: Box::new(sub_box),
+-            },
+-        }
++        self.layout_scripts(base, Some(sub), None, fs)
+     }
+
+     fn layout_subsup(&self, base: &EqNode, sub: &EqNode, sup: &EqNode, fs: f64) -> LayoutBox {
+-        // 적분 기호: 상한은 기호 상단, 하한은 기호 하단에 맞춤
+-        let is_integral = matches!(base, EqNode::MathSymbol(s) if is_integral_symbol(s));
+-
+-        let b = self.layout_node(base, fs);
+-        let sb = self.layout_node(sub, fs * SCRIPT_SCALE);
+-        let sp = self.layout_node(sup, fs * SCRIPT_SCALE);
+-
+-        if is_integral {
+-            // 적분 전용 배치 (Task #1317): 글리프를 stroke path 로 그리므로 상·하한 attach
+-            // point 를 path 기하(`integral_geom`)에 맞춰 산출한다. SVG/Canvas/Skia 가 동일
+-            // geom 을 공유하여 폰트 대체에 무관하게 정합한다(정답 한글 2022 비례).
+-            //   - 상한(sup): 상단 갈고리 우측, 글리프 최상단 근처
+-            //   - 하한(sub): 하단 갈고리 우측, 글리프 최하단(=baseline 근처)
+-            let geom = integral_geom(fs);
+-            // 상·하한이 적분 줄기에 붙지 않도록 **가로 간격(gap_x)만** 키워 띄운다.
+-            // 세로로 벌리면 적분 박스 높이가 커져 줄 간격이 위/아래로 넓어지므로
+-            // 세로 위치는 컴팩트하게 유지한다 (작업지시자 피드백, Task #1317 v4).
+-            let gap_x = fs * 0.22;
+-
+-            let mut base_box = b;
+-            base_box.x = 0.0;
+-            base_box.width = geom.width; // 글리프 advance = path 폭
+-
+-            // 글리프 기준 첨자 세로 위치(박스 상단 원점) — 컴팩트(글리프 상·하단 근처).
+-            let sup_dy = geom.top_y - sp.height * 0.30; // 상한: 최상단 근처
+-            let sub_dy = geom.bottom_y - sb.height * 0.72; // 하한: 최하단 근처
+-
+-            // 상한이 박스 위로 넘치지 않도록 글리프를 그만큼 아래로 내린다.
+-            let head = (-sup_dy).max(0.0);
+-            base_box.y = head;
+-
+-            let mut sup_box = sp;
+-            sup_box.x = base_box.x + geom.top_hook_x + gap_x;
+-            sup_box.y = base_box.y + sup_dy;
+-
+-            let mut sub_box = sb;
+-            sub_box.x = base_box.x + geom.bottom_hook_x + gap_x;
+-            sub_box.y = base_box.y + sub_dy;
+-
+-            let right = (sup_box.x + sup_box.width)
+-                .max(sub_box.x + sub_box.width)
+-                .max(base_box.x + geom.width);
+-            let total_w = right + fs * BIG_OP_TRAIL_PAD;
+-            let total_h = (sub_box.y + sub_box.height)
+-                .max(base_box.y + base_box.height)
+-                .max(sup_box.y + sup_box.height);
+-
+-            return LayoutBox {
+-                x: 0.0,
+-                y: 0.0,
+-                width: total_w,
+-                height: total_h,
+-                baseline: base_box.y + base_box.baseline,
+-                kind: LayoutKind::SubSup {
+-                    base: Box::new(base_box),
+-                    sub: Box::new(sub_box),
+-                    sup: Box::new(sup_box),
+-                },
+-            };
+-        }
+-
+-        let sup_shift = b.baseline - sp.height * 0.7;
+-        let sub_shift = b.baseline * 0.4;
+-
+-        let ascent = if sup_shift < 0.0 {
+-            sp.height - sup_shift.abs()
+-        } else {
+-            sp.height.max(0.0)
++        self.layout_scripts(base, Some(sub), Some(sup), fs)
++    }
++
++    fn layout_scripts(&self, base: &EqNode, sub: Option<&EqNode>, sup: Option<&EqNode>, fs: f64) -> LayoutBox {
++        let mut b = self.layout_node(base, fs);
++        let mut sub = sub.map(|n| self.layout_node(n, fs * SCRIPT_SCALE));
++        let mut sup = sup.map(|n| self.layout_node(n, fs * SCRIPT_SCALE));
++        // Width already contains italic ink correction. A thin gap separates scripts
++        // from the base; vertical placement is relative to baselines, not box tops.
++        let integral = matches!(base, EqNode::MathSymbol(s) if is_integral_symbol(s));
++        if integral { b.width -= fs * BIG_OP_TRAIL_PAD; }
++        let script_x = b.width + fs * 0.05;
++        if let Some(s) = &mut sup {
++            s.x = script_x;
++            s.y = (b.baseline - fs * 0.45 - s.baseline).min(b.height * 0.2);
++        }
++        if let Some(s) = &mut sub {
++            s.x = script_x;
++            s.y = (b.baseline + fs * 0.25 - s.baseline).max(b.height - fs * 0.45);
++            if let Some(p) = &sup { s.y = s.y.max(p.y + p.height + fs * 0.1); }
++        }
++        let top = sup.as_ref().map_or(0.0, |s| s.y.min(0.0));
++        b.y = -top;
++        let mut width = b.width;
++        let mut height = b.y + b.height;
++        for s in sub.iter_mut().chain(sup.iter_mut()) {
++            s.y -= top;
++            width = width.max(s.x + s.width);
++            height = height.max(s.y + s.height);
++        }
++        if integral { width += fs * BIG_OP_TRAIL_PAD; }
++        let baseline = b.y + b.baseline;
++        let base = Box::new(b);
++        let kind = match (sub, sup) {
++            (Some(sub), Some(sup)) => LayoutKind::SubSup { base, sub: Box::new(sub), sup: Box::new(sup) },
++            (Some(sub), None) => LayoutKind::Subscript { base, sub: Box::new(sub) },
++            (None, Some(sup)) => LayoutKind::Superscript { base, sup: Box::new(sup) },
++            _ => unreachable!("a script is required"),
+         };
+-        let top = sup_shift.min(0.0).abs();
+-        let total_h = (top + b.height)
+-            .max(top + sub_shift + sb.height)
+-            .max(ascent + b.height);
+-
+-        let base_y = top.max(
+-            if sup_shift > 0.0 {
+-                0.0
+-            } else {
+-                sp.height - sup_shift.abs() - b.baseline
+-            }
+-            .max(0.0),
+-        );
+-
+-        let mut base_box = b;
+-        base_box.x = 0.0;
+-        base_box.y = base_y;
+-
+-        let mut sup_box = sp;
+-        sup_box.x = base_box.width;
+-        sup_box.y = 0.0;
+-
+-        let mut sub_box = sb;
+-        sub_box.x = base_box.width;
+-        sub_box.y = base_y + sub_shift;
+-
+-        let script_w = sup_box.width.max(sub_box.width);
+-        let total_w = base_box.width + script_w;
+-
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: total_w,
+-            height: total_h
+-                .max(base_box.y + base_box.height)
+-                .max(sub_box.y + sub_box.height),
+-            baseline: base_box.y + base_box.baseline,
+-            kind: LayoutKind::SubSup {
+-                base: Box::new(base_box),
+-                sub: Box::new(sub_box),
+-                sup: Box::new(sup_box),
+-            },
+-        }
++        LayoutBox { x: 0.0, y: 0.0, width, height, baseline, kind }
+     }
+
+     fn layout_big_op(
+@@ -704,7 +481,9 @@
+         // ∑, ∏ 등: limits 스타일 (위/아래 중앙)
+         let op_fs = fs * BIG_OP_SCALE;
+         let op_w = estimate_text_width(symbol, op_fs, false);
+-        let op_h = op_fs;
++        let op_metrics = text_metrics(symbol, op_fs, false, false);
++        let op_baseline = (op_fs * TEXT_BASELINE).max(op_metrics.ascent);
++        let op_h = op_baseline + (op_fs * 0.2).max(op_metrics.descent);
+
+         let sub_box = sub.as_ref().map(|s| self.layout_node(s, fs * SCRIPT_SCALE));
+         let sup_box = sup.as_ref().map(|s| self.layout_node(s, fs * SCRIPT_SCALE));
+@@ -728,7 +507,7 @@
+         .copied()
+         .fold(0.0f64, f64::max);
+
+-        let baseline = sup_h + op_h * 0.6;
++        let baseline = sup_h + op_baseline;
+
+         let sup_laid = sup_box.map(|mut b| {
+             b.x = (max_w - b.width) / 2.0;
+@@ -765,22 +544,22 @@
+         sup: &Option<Box<EqNode>>,
+         fs: f64,
+     ) -> LayoutBox {
+-        let op_fs = fs * BIG_OP_SCALE;
++        let op_fs = fs * INTEGRAL_SCALE;
+         let op_w = estimate_text_width(symbol, op_fs, false);
+-        let op_h = op_fs;
++        let op_metrics = text_metrics(symbol, op_fs, false, false);
++        let op_baseline = (op_fs * TEXT_BASELINE).max(op_metrics.ascent);
++        let op_h = op_baseline + (op_fs * 0.2).max(op_metrics.descent);
+
+         let sub_box = sub.as_ref().map(|s| self.layout_node(s, fs * SCRIPT_SCALE));
+         let sup_box = sup.as_ref().map(|s| self.layout_node(s, fs * SCRIPT_SCALE));
+
+-        // 기호 기준선: 기호 높이의 60% (중앙보다 약간 위)
+-        let op_baseline = op_h * 0.6;
+
+         // 위첨자: 기호 오른쪽 위
+         let sup_shift = op_h * 0.1; // 기호 상단에서 약간 아래
+                                     // 아래첨자: 기호 오른쪽 아래
+         let sub_shift = op_h * 0.55; // 기호 중앙 아래
+
+-        let script_x = op_w; // 첨자는 기호 오른쪽에 배치
++        let script_x = op_w + fs * 0.05; // 첨자는 기호 오른쪽에 배치
+
+         let mut total_w = op_w;
+         let mut total_h = op_h;
+@@ -818,7 +597,9 @@
+     fn layout_limit(&self, is_upper: bool, sub: &Option<Box<EqNode>>, fs: f64) -> LayoutBox {
+         let name = if is_upper { "Lim" } else { "lim" };
+         let name_w = estimate_text_width(name, fs, false);
+-        let name_h = fs;
++        let name_metrics = text_metrics(name, fs, false, false);
++        let name_baseline = (fs * TEXT_BASELINE).max(name_metrics.ascent);
++        let name_h = name_baseline + (fs * 0.2).max(name_metrics.descent);
+
+         let sub_box = sub.as_ref().map(|s| self.layout_node(s, fs * SCRIPT_SCALE));
+         let sub_h = sub_box
+@@ -841,7 +622,7 @@
+             y: 0.0,
+             width: w,
+             height: total_h,
+-            baseline: fs * 0.8,
++            baseline: name_baseline,
+             kind: LayoutKind::Limit {
+                 is_upper,
+                 sub: sub_laid.map(Box::new),
+@@ -1109,42 +890,27 @@
+     }
+
+     fn layout_paren(&self, left: &str, right: &str, body: &EqNode, fs: f64) -> LayoutBox {
+-        let b = self.layout_node(body, fs);
+-        let use_stretch_round = b.height > fs * 1.2 && matches!((left, right), ("(", ")"));
+-        let pad = if use_stretch_round {
+-            fs * 0.03
+-        } else {
+-            fs * PAREN_PAD
+-        };
+-        // Times New Roman '(' advance (em 기준) = 0.333. 텍스트 높이 glyph는 이 폭을 유지하고,
+-        // 큰 둥근 괄호 path는 한컴 HyhwpEQ 출력에 가깝게 더 좁게 잡는다. (Task #283, #1139)
+-        let paren_w = if use_stretch_round {
+-            fs * 0.27
+-        } else {
+-            fs * 0.333
+-        };
+-
+-        let left_w = if left.is_empty() { 0.0 } else { paren_w };
+-        let right_w = if right.is_empty() { 0.0 } else { paren_w };
+-
+-        let mut body_box = b;
+-        body_box.x = left_w + pad;
+-        body_box.y = 0.0;
+-
+-        let total_w = left_w + pad + body_box.width + pad + right_w;
+-
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: total_w,
+-            height: body_box.height,
+-            baseline: body_box.baseline,
+-            kind: LayoutKind::Paren {
+-                left: left.to_string(),
+-                right: right.to_string(),
+-                body: Box::new(body_box),
+-            },
+-        }
++        let mut b = self.layout_node(body, fs);
++        let use_glyph = b.height <= fs * 1.2;
++        let pad = fs * if use_glyph { PAREN_PAD } else { 0.03 };
++        let left_w = delimiter_width(left, fs, b.height);
++        let right_w = delimiter_width(right, fs, b.height);
++        let mut baseline = b.baseline;
++        let mut descent = b.height - b.baseline;
++        if use_glyph {
++            for symbol in [left, right] {
++                if matches!(symbol, "(" | ")") {
++                    let m = text_metrics(symbol, fs, false, false);
++                    baseline = baseline.max(m.ascent);
++                    descent = descent.max(m.descent);
++                }
++            }
++        }
++        b.x = left_w + pad;
++        b.y = baseline - b.baseline;
++        LayoutBox { x: 0.0, y: 0.0, width: left_w + pad + b.width + pad + right_w,
++            height: baseline + descent, baseline,
++            kind: LayoutKind::Paren { left: left.into(), right: right.into(), body: Box::new(b) } }
+     }
+
+     fn layout_decoration(
+@@ -1172,24 +938,18 @@
+         }
+     }
+
+-    fn layout_font_style(
+-        &self,
+-        style: super::symbols::FontStyleKind,
+-        body: &EqNode,
+-        fs: f64,
+-    ) -> LayoutBox {
+-        let b = self.layout_node(body, fs);
+-        LayoutBox {
+-            x: 0.0,
+-            y: 0.0,
+-            width: b.width,
+-            height: b.height,
+-            baseline: b.baseline,
+-            kind: LayoutKind::FontStyle {
+-                style,
+-                body: Box::new(b),
+-            },
+-        }
++    fn layout_font_style(&self, style: super::symbols::FontStyleKind, body: &EqNode, fs: f64) -> LayoutBox {
++        use super::symbols::FontStyleKind::*;
++        let (italic, bold) = match style {
++            Roman | SansSerif | Monospace => (false, false),
++            Italic => (true, self.bold),
++            Bold => (self.italic, true),
++            Blackboard => (false, true),
++            Calligraphy | Fraktur => (false, false),
++        };
++        let b = Self { italic, bold }.layout_node(body, fs);
++        LayoutBox { x: 0.0, y: 0.0, width: b.width, height: b.height, baseline: b.baseline,
++            kind: LayoutKind::FontStyle { style, body: Box::new(b) } }
+     }
+
+     fn layout_space(&self, kind: SpaceKind, fs: f64) -> LayoutBox {
+@@ -1214,73 +974,9 @@
+     matches!(symbol, "∫" | "∬" | "∭" | "∮" | "∯" | "∰")
+ }
+
+-/// 텍스트 폭 추정
++/// Width includes advances and ink overhang from the bundled drawing face.
+ pub(crate) fn estimate_text_width(text: &str, font_size: f64, italic: bool) -> f64 {
+-    let mut w = 0.0;
+-    for ch in text.chars() {
+-        let ratio = if ch.is_ascii() {
+-            if ch.is_ascii_uppercase() {
+-                0.65
+-            } else if ch.is_ascii_lowercase() {
+-                0.55
+-            } else if ch.is_ascii_digit() {
+-                0.55
+-            } else {
+-                0.5
+-            }
+-        } else {
+-            estimate_unicode_char_width(ch)
+-        };
+-        w += font_size * ratio;
+-    }
+-    if italic {
+-        w *= 1.05;
+-    }
+-    w
+-}
+-
+-/// 비-ASCII 문자의 폭 비율 추정 (font_size 대비)
+-fn estimate_unicode_char_width(ch: char) -> f64 {
+-    match ch {
+-        // 프라임/아포스트로피 — 매우 좁음
+-        '′' | '″' | '‴' | '\'' | '`' => 0.3,
+-        // 그리스 소문자 — 일반 라틴 소문자와 유사
+-        'α'..='ω' | 'ϑ' | 'ϖ' => 0.55,
+-        // 그리스 대문자 — 일반 라틴 대문자와 유사
+-        'Α'..='Ω' | 'ϒ' => 0.65,
+-        // 수학 연산자 — 중간 너비
+-        '±' | '∓' | '×' | '÷' | '·' | '∘' | '†' | '‡' | '•' => 0.6,
+-        // 관계 기호 — 등호 너비와 유사
+-        '≠' | '≤' | '≥' | '≈' | '≡' | '≅' | '∼' | '≃' | '≍' | '≐' | '∝' | '≺' | '≻' => {
+-            0.7
+-        }
+-        // 집합/논리 기호
+-        '∈' | '∉' | '∋' | '⊂' | '⊃' | '⊆' | '⊇' | '∀' | '∃' | '¬' | '∧' | '∨' => {
+-            0.65
+-        }
+-        '⊏' | '⊐' | '⊑' | '⊒' | '⊻' | '⊢' | '⊣' | '⊨' => 0.65,
+-        // 큰 연산자 기호 (단독 텍스트로 사용될 때)
+-        '∫' | '∬' | '∭' | '∮' | '∯' | '∰' => 0.5,
+-        '∑' | '∏' | '∐' => 0.8,
+-        '∪' | '∩' | '⊔' | '⊓' | '⊎' | '⋀' | '⋁' => 0.7,
+-        '⊕' | '⊗' | '⊙' | '⊖' | '⊘' => 0.7,
+-        // 화살표
+-        '←' | '→' | '↑' | '↓' | '↔' | '↕' => 0.8,
+-        '⇐' | '⇒' | '⇑' | '⇓' | '⇔' | '⇕' => 0.8,
+-        '↖' | '↗' | '↙' | '↘' | '↦' | '↩' | '↪' => 0.8,
+-        // 점 기호
+-        '⋯' | '…' | '⋮' | '⋱' => 0.8,
+-        // 기타 수학 기호 — 좁은 것
+-        '∂' | '∅' | '∇' | '∞' | '∠' | '∡' | '∢' | '⊾' => 0.6,
+-        '⊥' | '⊤' | '°' | '‰' | '‱' | '♯' => 0.5,
+-        'ℵ' | 'ℏ' | 'ı' | 'ȷ' | 'ℓ' | '℘' | 'ℑ' | 'ℜ' | 'ℒ' | 'Å' | '℧' => 0.6,
+-        '℃' | '℉' => 0.9,
+-        '△' | '▽' | '○' | '◇' | '⋄' => 0.7,
+-        // CJK — 전각
+-        '\u{3000}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{AC00}'..='\u{D7AF}' => 1.0,
+-        // 기타 비-ASCII — 중간 너비 기본값
+-        _ => 0.6,
+-    }
++    text_metrics(text, font_size, italic, false).width
+ }
+
+ #[cfg(test)]
+@@ -1293,6 +989,99 @@
+         let tokens = tokenize(script);
+         let ast = EqParser::new(tokens).parse();
+         EqLayout::new(font_size).layout(&ast)
++    }
++
++    /// Collect actual TTF outlines in root coordinates, independently of leaf box sizes.
++    fn ink_boxes(b: &LayoutBox, x: f64, y: f64, fs: f64, italic: bool, bold: bool, ink: &mut Vec<(f64, f64, f64, f64)>) {
++        let (x, y) = (x + b.x, y + b.y);
++        let mut leaf = |text: &str, glyph_fs: f64, it: bool, weight: bool, origin: f64| {
++            let face = super::super::metrics::face(it, weight);
++            let scale = glyph_fs / f64::from(face.units_per_em());
++            let mut pen = origin + text_metrics(text, glyph_fs, it, weight).left_pad;
++            for ch in text.chars() {
++                let id = face.glyph_index(ch).expect("test glyph must exist in CM");
++                if let Some(r) = face.glyph_bounding_box(id) {
++                    ink.push((pen + f64::from(r.x_min) * scale, y + b.baseline - f64::from(r.y_max) * scale,
++                        pen + f64::from(r.x_max) * scale, y + b.baseline - f64::from(r.y_min) * scale));
++                }
++                pen += f64::from(face.glyph_hor_advance(id).unwrap()) * scale;
++            }
++        };
++        match &b.kind {
++            LayoutKind::Text(t) => leaf(t, fs, italic && !has_cjk(t), bold, x),
++            LayoutKind::Number(t) => leaf(t, fs, false, bold, x),
++            LayoutKind::Symbol(t) => leaf(t, fs, false, false, x + (b.width - text_metrics(t, fs, false, false).width) / 2.0),
++            LayoutKind::MathSymbol(t) => leaf(t, if is_integral_symbol(t) { fs * INTEGRAL_SCALE } else { fs }, false, false, x),
++            LayoutKind::Function(t) => leaf(t, fs, false, false, x),
++            LayoutKind::Row(ch) => for c in ch { ink_boxes(c, x, y, fs, italic, bold, ink); },
++            LayoutKind::Fraction { numer, denom } => {
++                ink_boxes(numer, x, y, fs, italic, bold, ink);
++                ink_boxes(denom, x, y, fs, italic, bold, ink);
++            }
++            LayoutKind::Superscript { base, sup } => {
++                ink_boxes(base, x, y, fs, italic, bold, ink);
++                ink_boxes(sup, x, y, fs * SCRIPT_SCALE, italic, bold, ink);
++            }
++            LayoutKind::Subscript { base, sub } => {
++                ink_boxes(base, x, y, fs, italic, bold, ink);
++                ink_boxes(sub, x, y, fs * SCRIPT_SCALE, italic, bold, ink);
++            }
++            LayoutKind::SubSup { base, sub, sup } => {
++                ink_boxes(base, x, y, fs, italic, bold, ink);
++                ink_boxes(sub, x, y, fs * SCRIPT_SCALE, italic, bold, ink);
++                ink_boxes(sup, x, y, fs * SCRIPT_SCALE, italic, bold, ink);
++            }
++            LayoutKind::Paren { left, right, body } => {
++                if body.height <= fs * 1.2 {
++                    for (t, origin) in [(left, x), (right, x + b.width - delimiter_width(right, fs, body.height))] {
++                        if matches!(t.as_str(), "(" | ")") { leaf(t, fs, false, false, origin); }
++                    }
++                }
++                ink_boxes(body, x, y, fs, italic, bold, ink);
++            }
++            LayoutKind::BigOp { symbol, sub, sup } => {
++                let op_fs = fs * if is_integral_symbol(symbol) { INTEGRAL_SCALE } else { BIG_OP_SCALE };
++                let origin = if is_integral_symbol(symbol) { x } else {
++                    x + (b.width - fs * BIG_OP_TRAIL_PAD - text_metrics(symbol, op_fs, false, false).width) / 2.0
++                };
++                leaf(symbol, op_fs, false, false, origin);
++                for s in sub.iter().chain(sup.iter()) { ink_boxes(s, x, y, fs * SCRIPT_SCALE, italic, bold, ink); }
++            }
++            LayoutKind::FontStyle { style, body } => {
++                use super::super::symbols::FontStyleKind::*;
++                let (it, weight) = match style {
++                    Roman | SansSerif | Monospace | Calligraphy | Fraktur => (false, false),
++                    Italic => (true, bold), Bold => (italic, true), Blackboard => (false, true),
++                };
++                ink_boxes(body, x, y, fs, it, weight, ink);
++            }
++            LayoutKind::Space(_) | LayoutKind::Empty => {},
++            _ => panic!("extend ink check for {:?}", b.kind),
++        }
++    }
++
++    #[test]
++    fn user_equation_and_nested_scripts_keep_all_ink_inside_without_overlap() {
++        for script in [
++            r"i\hbar\frac{\partial\psi}{\partial t}=-\frac{\hbar^2}{2m}\nabla^2\psi+V\psi",
++            r"f^{g^{h^2}}", r"\nabla^2+m^2+\psi^2+\hbar^2+x_1^2",
++            r"LEFT ( {1} over {{1} over {2}} RIGHT )^4",
++            r"\sum_{n=1}^{N} n^2", r"\int_0^1 x^2 dx",
++            r"rm {m^2}+bold {m^2}+it {f^2}",
++        ] {
++            let b = parse_and_layout(script, 24.0);
++            let mut ink = Vec::new();
++            ink_boxes(&b, 0.0, 0.0, 24.0, true, false, &mut ink);
++            assert!(!ink.is_empty());
++            for (i, a) in ink.iter().enumerate() {
++                assert!(a.0 >= -1e-6 && a.1 >= -1e-6 && a.2 <= b.width + 1e-6 && a.3 <= b.height + 1e-6,
++                    "{script}: ink {a:?} outside {} x {}", b.width, b.height);
++                for other in &ink[i + 1..] {
++                    assert!(a.2 <= other.0 + 1e-6 || other.2 <= a.0 + 1e-6 || a.3 <= other.1 + 1e-6 || other.3 <= a.1 + 1e-6,
++                        "{script}: ink {a:?} overlaps {other:?}");
++                }
++            }
++        }
+     }
+
+     #[test]
+@@ -1355,46 +1144,31 @@
+     }
+
+     #[test]
+-    fn test_superscript_tall_base_no_overshoot() {
+-        // [#1300] 키 큰 base(괄호 분수 등)의 위첨자가 baseline 위로 과하게 치솟아
+-        // 윗줄을 침범하던 문제. base 밀어내기(base_y)는 sup 높이를 넘지 않아야 한다.
+-        fn find_sup(lb: &LayoutBox) -> Option<(&LayoutBox, &LayoutBox)> {
+-            match &lb.kind {
+-                LayoutKind::Superscript { base, sup } => Some((base, sup)),
+-                LayoutKind::Row(ch) => ch.iter().rev().find_map(find_sup),
+-                _ => None,
+-            }
+-        }
+-        // 위첨자 상단이 base 상단보다 위로 치솟지 않아야 한다(상단 정렬). 즉 sup.y >= base.y.
+-        // (이전 버그: 키 큰 base 를 아래로 밀어 sup.y=0 < base.y 가 되어 위첨자가 base 상단 위로 떠올랐다.)
+-        const MARGIN: f64 = 0.01;
+-
+-        // 키 큰 base: 괄호로 감싼 분수 — 상단 정렬(base_y≈0) 확인
+-        let tall = parse_and_layout("LEFT ( {1} over {6} RIGHT )^4", 12.0);
+-        let (b_tall, s_tall) = find_sup(&tall).expect("tall superscript");
+-        assert!(
+-            s_tall.y >= b_tall.y - MARGIN,
+-            "tall: sup.y ({}) must not rise above base.y ({})",
+-            s_tall.y,
+-            b_tall.y
+-        );
+-        // 합성 baseline 이 base 자연 baseline 과 일치(이중 가산 없음)
+-        assert!(
+-            (tall.baseline - (b_tall.y + b_tall.baseline)).abs() < MARGIN,
+-            "tall: box baseline ({}) should equal base baseline ({})",
+-            tall.baseline,
+-            b_tall.y + b_tall.baseline
+-        );
+-
+-        // 짧은 base: x^4 도 동일 불변(상단 정렬) — 위첨자가 base 상단 위로 안 떠오름
+-        let short = parse_and_layout("x^4", 12.0);
+-        let (b_short, s_short) = find_sup(&short).expect("short superscript");
+-        assert!(
+-            s_short.y >= b_short.y - MARGIN,
+-            "short: sup.y ({}) must not rise above base.y ({})",
+-            s_short.y,
+-            b_short.y
+-        );
++    fn scripts_use_raised_and_lowered_baselines_without_collisions() {
++        fn check(b: &LayoutBox) {
++            match &b.kind {
++                LayoutKind::Row(children) => children.iter().for_each(check),
++                LayoutKind::Superscript { base, sup } => {
++                    assert!(sup.x >= base.x + base.width);
++                    assert!(sup.y + sup.baseline < base.y + base.baseline);
++                    assert!(sup.y >= 0.0 && sup.y + sup.height <= b.height + 1e-9);
++                    assert!(base.y >= 0.0 && base.y + base.height <= b.height + 1e-9);
++                    check(base); check(sup);
++                }
++                LayoutKind::SubSup { base, sub, sup } => {
++                    assert!(sup.x >= base.x + base.width);
++                    assert!(sub.x >= base.x + base.width);
++                    assert!(sup.y + sup.baseline < base.y + base.baseline);
++                    assert!(sub.y + sub.baseline > base.y + base.baseline);
++                    assert!(sub.y >= sup.y + sup.height);
++                    check(base); check(sub); check(sup);
++                }
++                _ => {}
++            }
++        }
++        for script in ["nabla^2", "m^2", "psi^2", "hbar^2", "x_1^2", "LEFT ( {1} over {6} RIGHT )^4", "25^{{1} over {3}}"] {
++            check(&parse_and_layout(script, 20.0));
++        }
+     }
+
+     #[test]
+--- /dev/null
++++ b/src/renderer/equation/metrics.rs
+@@ -0,0 +1,84 @@
++//! Advance and ink bounds from the same original Computer Modern faces used to draw equations.
++use std::sync::OnceLock;
++use ttf_parser::Face;
++
++const REGULAR: &[u8] = include_bytes!("../../../assets/fonts/computer-modern/ComputerModern-Regular.ttf");
++const ITALIC: &[u8] = include_bytes!("../../../assets/fonts/computer-modern/ComputerModern-Italic.ttf");
++const BOLD: &[u8] = include_bytes!("../../../assets/fonts/computer-modern/ComputerModern-Bold.ttf");
++
++pub(crate) fn face(italic: bool, bold: bool) -> &'static Face<'static> {
++    static FACES: OnceLock<[Face<'static>; 3]> = OnceLock::new();
++    let faces = FACES.get_or_init(|| [
++        Face::parse(REGULAR, 0).expect("bundled Computer Modern Regular"),
++        Face::parse(ITALIC, 0).expect("bundled Computer Modern Italic"),
++        Face::parse(BOLD, 0).expect("bundled Computer Modern Bold"),
++    ]);
++    &faces[if bold { 2 } else if italic { 1 } else { 0 }]
++}
++
++pub(crate) struct TextMetrics {
++    pub width: f64,
++    pub ascent: f64,
++    pub descent: f64,
++    /// Add to the layout box origin before drawing; includes negative left bearing.
++    pub left_pad: f64,
++}
++
++pub(crate) fn has_cjk(text: &str) -> bool {
++    text.chars().any(|c| matches!(c,
++        '\u{3000}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{AC00}'..='\u{D7AF}'))
++}
++
++pub(crate) fn text_metrics(text: &str, fs: f64, italic: bool, bold: bool) -> TextMetrics {
++    let face = face(italic, bold);
++    let scale = fs / f64::from(face.units_per_em());
++    let (mut pen, mut left, mut right, mut ascent, mut descent) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
++    for ch in text.chars() {
++        if let Some(id) = face.glyph_index(ch) {
++            if let Some(ink) = face.glyph_bounding_box(id) {
++                left = left.min(pen + f64::from(ink.x_min) * scale);
++                right = right.max(pen + f64::from(ink.x_max) * scale);
++                ascent = ascent.max(f64::from(ink.y_max) * scale);
++                descent = descent.max(-f64::from(ink.y_min) * scale);
++            }
++            pen += f64::from(face.glyph_hor_advance(id).unwrap_or(face.units_per_em())) * scale;
++        } else {
++            // ponytail: unsupported glyphs use a conservative em box; embed the fallback
++            // face before promising exact metrics for CJK or arbitrary Unicode text.
++            pen += fs;
++            ascent = ascent.max(fs);
++            descent = descent.max(fs * 0.25);
++        }
++    }
++    TextMetrics { width: right.max(pen) - left, ascent, descent, left_pad: -left }
++}
++
++/// Match the renderer's natural round glyph / stretched path choice.
++pub(crate) fn delimiter_width(symbol: &str, fs: f64, body_height: f64) -> f64 {
++    if symbol.is_empty() { 0.0 }
++    else if body_height <= fs * 1.2 && matches!(symbol, "(" | ")") {
++        text_metrics(symbol, fs, false, false).width
++    } else { fs * 0.27 }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn computer_modern_advance_and_ink_are_contained() {
++        for (text, italic) in [("m", true), ("f", true), ("j", true), ("ψ", false), ("ℏ", false), ("∇", false), ("∫", false)] {
++            let m = text_metrics(text, 20.0, italic, false);
++            let f = face(italic, false);
++            let id = f.glyph_index(text.chars().next().unwrap()).unwrap();
++            let ink = f.glyph_bounding_box(id).unwrap();
++            let scale = 20.0 / f64::from(f.units_per_em());
++            assert!(m.left_pad + f64::from(ink.x_min) * scale >= -1e-9, "{text} left");
++            assert!(m.left_pad + f64::from(ink.x_max) * scale <= m.width + 1e-9, "{text} right");
++            assert!(f64::from(ink.y_max) * scale <= m.ascent + 1e-9, "{text} top");
++            assert!(-f64::from(ink.y_min) * scale <= m.descent + 1e-9, "{text} bottom");
++        }
++        assert!(text_metrics("∇", 20.0, false, false).width > 16.0);
++        assert!(text_metrics("m", 20.0, true, false).width > 16.0);
++    }
++}
+--- a/src/renderer/equation/mod.rs
++++ b/src/renderer/equation/mod.rs
+@@ -7,6 +7,7 @@
+ #[cfg(target_arch = "wasm32")]
+ pub mod canvas_render;
+ pub mod layout;
++pub(crate) mod metrics;
+ pub mod parser;
+ pub mod svg_render;
+ pub mod symbols;
+--- a/src/renderer/equation/svg_render.rs
++++ b/src/renderer/equation/svg_render.rs
+@@ -5,14 +5,12 @@
+
+ use super::ast::MatrixStyle;
+ use super::layout::*;
++use super::metrics::{delimiter_width, text_metrics};
+ use super::symbols::{DecoKind, FontStyleKind};
+
+-/// 수식 전용 font-family
+-/// 순서: Latin Modern Math (LaTeX 설치 시) → STIX Two Text (Mac/STIX 설치 시) → STIX Two Math → Times New Roman (Windows 기본) → serif
+-/// Cambria Math 는 Windows 에서 "볼드 인상" 을 유발해 제외. Pretendard 는 산세리프라 수식 부적합으로 제외. (Task #280)
+-pub const DEFAULT_EQUATION_FONT_FAMILY_ATTR: &str =
+-    "font-family=\"'Latin Modern Math', 'STIX Two Text', 'STIX Two Math', 'Times New Roman', 'Times', serif\"";
+-const EQ_FONT_FAMILY: &str = " font-family=\"'Latin Modern Math', 'STIX Two Text', 'STIX Two Math', 'Times New Roman', 'Times', serif\"";
++/// Embedded original Computer Modern faces; serif only covers unsupported glyphs.
++pub const DEFAULT_EQUATION_FONT_FAMILY_ATTR: &str = "font-family=\"'Computer Modern', serif\"";
++const EQ_FONT_FAMILY: &str = " font-family=\"'Computer Modern', serif\"";
+
+ /// 수식을 SVG 조각 문자열로 렌더링
+ ///
+@@ -53,7 +51,6 @@
+             }
+         }
+         LayoutKind::Text(text) => {
+-            let text_x = x;
+             let text_y = y + lb.baseline;
+             let esc = escape_xml(text);
+             let fi = fs;
+@@ -64,7 +61,9 @@
+                     '\u{3000}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{AC00}'..='\u{D7AF}'
+                 )
+             });
+-            let italic_attr = if !has_cjk && italic {
++            let use_italic = !has_cjk && italic && !bold;
++            let text_x = x + text_metrics(text, fs, use_italic, bold).left_pad;
++            let italic_attr = if use_italic {
+                 " font-style=\"italic\""
+             } else {
+                 ""
+@@ -76,50 +75,35 @@
+             ));
+         }
+         LayoutKind::Number(text) => {
+-            let text_x = x;
+-            let text_y = y + lb.baseline;
++            let text_x = x + text_metrics(text, fs, false, bold).left_pad;
+             let esc = escape_xml(text);
+-            let fi = fs;
+             let style_attr = if bold { " font-weight=\"bold\"" } else { "" };
+             svg.push_str(&format!(
+                 "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}{}>{}</text>\n",
+-                text_x, text_y, fi, color, style_attr, EQ_FONT_FAMILY, esc,
++                text_x, y + lb.baseline, fs, color, style_attr, EQ_FONT_FAMILY, esc,
+             ));
+         }
+         LayoutKind::Symbol(text) => {
+-            let text_x = x + lb.width / 2.0;
+-            let text_y = y + lb.baseline;
+-            let esc = escape_xml(text);
+-            let fi = fs;
+-            svg.push_str(&format!(
+-                "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\" text-anchor=\"middle\"{}>{}</text>\n",
+-                text_x, text_y, fi, color, EQ_FONT_FAMILY, esc,
++            let metrics = text_metrics(text, fs, false, false);
++            let text_x = x + (lb.width - metrics.width) / 2.0 + metrics.left_pad;
++            svg.push_str(&format!(
++                "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
++                text_x, y + lb.baseline, fs, color, EQ_FONT_FAMILY, escape_xml(text),
+             ));
+         }
+         LayoutKind::MathSymbol(text) => {
+-            // 적분 기호(∫): 폰트 `<text>` 대신 stroke path 로 렌더 (Task #1317).
+-            // 폰트 미임베딩 SVG 에서 뷰어 대체 폰트의 글리프 bbox 편차로 상·하한이
+-            // 어긋나던 문제를, 폰트 독립·결정적 path 로 해소한다(geom SSOT).
+-            if super::layout::is_integral_symbol(text) {
+-                svg.push_str(&integral_path(x, y, fs, color));
+-            } else {
+-                let text_x = x;
+-                let text_y = y + lb.baseline;
+-                let esc = escape_xml(text);
+-                svg.push_str(&format!(
+-                    "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
+-                    text_x, text_y, fs, color, EQ_FONT_FAMILY, esc,
+-                ));
+-            }
++            let glyph_fs = if is_integral_symbol(text) { fs * INTEGRAL_SCALE } else { fs };
++            let text_x = x + text_metrics(text, glyph_fs, false, false).left_pad;
++            svg.push_str(&format!(
++                "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
++                text_x, y + lb.baseline, glyph_fs, color, EQ_FONT_FAMILY, escape_xml(text),
++            ));
+         }
+         LayoutKind::Function(name) => {
+-            let text_x = x;
+-            let text_y = y + lb.baseline;
+-            let esc = escape_xml(name);
+-            let fi = fs;
++            let text_x = x + text_metrics(name, fs, false, false).left_pad;
+             svg.push_str(&format!(
+                 "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
+-                text_x, text_y, fi, color, EQ_FONT_FAMILY, esc,
++                text_x, y + lb.baseline, fs, color, EQ_FONT_FAMILY, escape_xml(name),
+             ));
+         }
+         LayoutKind::Fraction { numer, denom } => {
+@@ -240,29 +224,16 @@
+                 } else {
+                     super::layout::BIG_OP_SCALE
+                 };
+-            let esc = escape_xml(symbol);
+-
+-            if is_integral {
+-                // 적분: 기호는 왼쪽, 첨자는 오른쪽 위/아래 (nolimits).
+-                // Task #1317: 폰트 `<text>` 대신 stroke path 로 렌더(geom SSOT).
+-                svg.push_str(&integral_path(x, y, fs, color));
++            let metrics = text_metrics(symbol, op_fs, false, false);
++            let op_x = if is_integral {
++                x + metrics.left_pad
+             } else {
+-                // ∑, ∏ 등: 기호는 중앙, 첨자는 위/아래 (limits)
+-                let sup_h = sup.as_ref().map(|b| b.height + fs * 0.05).unwrap_or(0.0);
+-                // Task #1233: 연산자는 max_w(= lb.width - trailing pad)에 중앙정렬 →
+-                // pad 전체가 순수 trailing 간격이 되고 첨자(max_w 중앙정렬)와 정렬된다.
+-                // #1304: 연산자 폭은 layout 의 estimate_text_width 와 동일 기준을 써야
+-                // 첨자(레이아웃이 estimate_text_width 로 max_w 중앙정렬)와 가로 중심이 맞는다.
+-                // (기존 estimate_op_width 의 0.6 과소추정 → ∑가 우측으로, 첨자가 좌측으로 보임)
+-                let center_w = lb.width - fs * super::layout::BIG_OP_TRAIL_PAD;
+-                let op_x =
+-                    x + (center_w - super::layout::estimate_text_width(symbol, op_fs, false)) / 2.0;
+-                let op_y = y + sup_h + op_fs * 0.8;
+-                svg.push_str(&format!(
+-                    "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
+-                    op_x, op_y, op_fs, color, EQ_FONT_FAMILY, esc,
+-                ));
+-            }
++                x + (lb.width - fs * BIG_OP_TRAIL_PAD - metrics.width) / 2.0 + metrics.left_pad
++            };
++            svg.push_str(&format!(
++                "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
++                op_x, y + lb.baseline, op_fs, color, EQ_FONT_FAMILY, escape_xml(symbol),
++            ));
+             // 위/아래 첨자: LayoutBox의 자식 좌표로 배치
+             if let Some(sup_box) = sup {
+                 render_box(
+@@ -294,8 +265,8 @@
+             let fi = fs;
+             svg.push_str(&format!(
+                 "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
+-                x,
+-                y + fi * 0.8,
++                x + text_metrics(name, fi, false, false).left_pad,
++                y + lb.baseline,
+                 fi,
+                 color,
+                 EQ_FONT_FAMILY,
+@@ -357,31 +328,32 @@
+         }
+         LayoutKind::Paren { left, right, body } => {
+             // 텍스트 높이 파렌(`(`, `)`)은 폰트 글리프로 렌더, 그 외는 path. (Task #283)
+-            let use_glyph = lb.height <= fs * 1.2;
+-            let paren_w = if use_glyph { fs * 0.333 } else { fs * 0.27 };
++            let use_glyph = body.height <= fs * 1.2;
++            let left_w = delimiter_width(left, fs, body.height);
++            let right_w = delimiter_width(right, fs, body.height);
+             // 왼쪽 괄호
+             if !left.is_empty() {
+                 if use_glyph && (left == "(" || left == ")") {
+                     svg.push_str(&format!(
+                         "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
+-                        x, y + lb.baseline, fs, color, EQ_FONT_FAMILY, escape_xml(left),
++                        x + text_metrics(left, fs, false, false).left_pad, y + lb.baseline, fs, color, EQ_FONT_FAMILY, escape_xml(left),
+                     ));
+                 } else {
+-                    draw_stretch_bracket(svg, left, x, y, paren_w, lb.height, color, fs);
++                    draw_stretch_bracket(svg, left, x, y, left_w, lb.height, color, fs);
+                 }
+             }
+             // 본체
+             render_box(svg, body, x, y, color, fs, italic, bold);
+             // 오른쪽 괄호
+             if !right.is_empty() {
+-                let right_x = x + lb.width - paren_w;
++                let right_x = x + lb.width - right_w;
+                 if use_glyph && (right == "(" || right == ")") {
+                     svg.push_str(&format!(
+                         "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" fill=\"{}\"{}>{}</text>\n",
+-                        right_x, y + lb.baseline, fs, color, EQ_FONT_FAMILY, escape_xml(right),
++                        right_x + text_metrics(right, fs, false, false).left_pad, y + lb.baseline, fs, color, EQ_FONT_FAMILY, escape_xml(right),
+                     ));
+                 } else {
+-                    draw_stretch_bracket(svg, right, right_x, y, paren_w, lb.height, color, fs);
++                    draw_stretch_bracket(svg, right, right_x, y, right_w, lb.height, color, fs);
+                 }
+             }
+         }
+@@ -405,31 +377,6 @@
+         }
+         LayoutKind::Space(_) | LayoutKind::Newline | LayoutKind::Empty => {}
+     }
+-}
+-
+-/// 적분 기호(∫)를 stroke path 로 렌더 (Task #1317).
+-///
+-/// 글리프 박스 좌상단 `(x, y)` 기준으로 `integral_geom` 의 기하를 사용해 한 줄짜리
+-/// S-곡선(bottom-left → top-right, 양끝 갈고리)을 그린다. 폰트에 의존하지 않으므로
+-/// SVG 뷰어/환경에 무관하게 동일한 visual bbox 를 보장하며, layout 의 상·하한
+-/// attach point(동일 geom)와 정합한다.
+-fn integral_path(x: f64, y: f64, fs: f64, color: &str) -> String {
+-    let g = integral_geom(fs);
+-    let h = g.bottom_y - g.top_y;
+-    // 하단 갈고리 끝(좌하) → 상단 갈고리 끝(우상). 하부는 우측, 상부는 좌측으로
+-    // 휘어 적분기호 특유의 기운 S 형태를 만든다(round cap 으로 갈고리 표현).
+-    let p0x = x + g.bottom_hook_x;
+-    let p0y = y + g.bottom_y;
+-    let p3x = x + g.top_hook_x;
+-    let p3y = y + g.top_y;
+-    let c1x = x + g.width * 1.02;
+-    let c1y = y + g.bottom_y - h * 0.30;
+-    let c2x = x - g.width * 0.10;
+-    let c2y = y + g.top_y + h * 0.30;
+-    format!(
+-        "<path d=\"M{:.2},{:.2} C{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" stroke-linecap=\"round\"/>\n",
+-        p0x, p0y, c1x, c1y, c2x, c2y, p3x, p3y, color, g.stroke_w,
+-    )
+ }
+
+ fn font_size_from_box(lb: &LayoutBox, base_fs: f64) -> f64 {
+@@ -729,6 +676,36 @@
+     }
+
+     #[test]
++    fn computer_modern_integrals_use_glyphs_at_layout_baseline() {
++        for symbol in ["∫", "∮", "∬", "∭", "∯", "∰"] {
++            for kind in [
++                LayoutKind::MathSymbol(symbol.into()),
++                LayoutKind::BigOp { symbol: symbol.into(), sub: None, sup: None },
++            ] {
++                let layout = LayoutBox { x: 3.0, y: 4.0, width: 60.0,
++                    height: 80.0, baseline: 37.0, kind };
++                let svg = render_equation_svg(&layout, "#000000", 20.0);
++                assert!(svg.contains(&format!(">{symbol}</text>")), "{svg}");
++                assert!(svg.contains("y=\"41.00\""), "{svg}");
++                assert!(svg.contains("font-size=\"50.00\""), "{svg}");
++                assert!(svg.contains("'Computer Modern'"), "{svg}");
++                assert!(!svg.contains("<path"), "{svg}");
++                assert!(!svg.contains("Latin Modern"), "{svg}");
++            }
++        }
++    }
++
++    #[test]
++    fn computer_modern_text_origin_includes_italic_overhang() {
++        let metrics = text_metrics("j", 20.0, true, false);
++        let layout = LayoutBox { x: 3.0, y: 4.0, width: metrics.width,
++            height: metrics.ascent + metrics.descent, baseline: metrics.ascent,
++            kind: LayoutKind::Text("j".into()) };
++        let svg = render_equation_svg(&layout, "#000000", 20.0);
++        assert!(svg.contains(&format!("x=\"{:.2}\"", 3.0 + metrics.left_pad)), "{svg}");
++    }
++
++    #[test]
+     fn test_fraction_svg() {
+         let svg = render_eq("a over b");
+         assert!(svg.contains("<text")); // 분자/분모 텍스트
+@@ -779,17 +756,7 @@
+     #[test]
+     fn test_issue_1139_integral_left_right_parens_are_curved() {
+         let svg = render_eq(" int _{0} ^{pi } {} x`cos LEFT ( {pi } over {2} -x RIGHT ) dx");
+-        // Task #1317: 적분 기호는 폰트 text(∫) 가 아닌 stroke path 로 렌더된다.
+-        assert!(
+-            !svg.contains(">∫<"),
+-            "적분 기호는 path 로 렌더되어야 함(text ∫ 아님): {}",
+-            svg
+-        );
+-        assert!(
+-            svg.contains("<path"),
+-            "적분 기호가 path 로 렌더되어야 함: {}",
+-            svg
+-        );
++        assert!(svg.contains(">∫</text>"), "integral must use the embedded CM glyph: {}", svg);
+         assert!(svg.contains(">cos<"), "cos 함수가 렌더링되어야 함: {}", svg);
+         assert!(
+             svg.contains(">π<"),
+--- a/src/renderer/skia/equation_conv.rs
++++ b/src/renderer/skia/equation_conv.rs
+@@ -6,13 +6,14 @@
+
+ use crate::renderer::equation::ast::MatrixStyle;
+ use crate::renderer::equation::layout::{
+-    integral_geom, is_integral_symbol, LayoutBox, LayoutKind, AXIS_HEIGHT, BIG_OP_SCALE,
+-    INTEGRAL_SCALE, SCRIPT_SCALE,
++    is_integral_symbol, LayoutBox, LayoutKind, AXIS_HEIGHT, BIG_OP_SCALE,
++    INTEGRAL_SCALE, SCRIPT_SCALE, BIG_OP_TRAIL_PAD,
+ };
++use crate::renderer::equation::metrics::{delimiter_width, has_cjk, text_metrics};
+ use crate::renderer::equation::symbols::{DecoKind, FontStyleKind};
+
+ const EQ_FONT_FAMILY: &str =
+-    "Latin Modern Math, STIX Two Math, Cambria Math, DejaVu Sans, Times New Roman, serif";
++    "Computer Modern, Times New Roman, serif";
+
+ pub fn render_equation(
+     canvas: &Canvas,
+@@ -33,7 +34,7 @@
+         origin_y,
+         colorref_to_skia(color, 1.0),
+         base_font_size,
+-        false,
++        true,
+         false,
+     );
+ }
+@@ -78,8 +79,8 @@
+                 text,
+                 x,
+                 y + lb.baseline,
+-                font_size_from_box(lb, fs),
+-                true,
++                fs,
++                italic && !bold && !has_cjk(text),
+                 bold,
+                 color,
+                 false,
+@@ -93,7 +94,7 @@
+                 text,
+                 x,
+                 y + lb.baseline,
+-                font_size_from_box(lb, fs),
++                fs,
+                 false,
+                 bold,
+                 color,
+@@ -108,7 +109,7 @@
+                 text,
+                 x + lb.width / 2.0,
+                 y + lb.baseline,
+-                font_size_from_box(lb, fs),
++                fs,
+                 false,
+                 false,
+                 color,
+@@ -116,25 +117,9 @@
+             );
+         }
+         LayoutKind::MathSymbol(text) => {
+-            // Task #1317: 적분 기호(∫)는 폰트 text 가 아닌 stroke path 로 렌더(geom SSOT,
+-            // svg/canvas 와 동일). 그 외 MathSymbol 은 text 렌더.
+-            if is_integral_symbol(text) {
+-                draw_integral(canvas, x, y, fs, color);
+-            } else {
+-                draw_text(
+-                    canvas,
+-                    font_mgr,
+-                    system_families,
+-                    text,
+-                    x,
+-                    y + lb.baseline,
+-                    font_size_from_box(lb, fs),
+-                    false,
+-                    false,
+-                    color,
+-                    false,
+-                );
+-            }
++            let glyph_fs = if is_integral_symbol(text) { fs * INTEGRAL_SCALE } else { fs };
++            draw_text(canvas, font_mgr, system_families, text, x, y + lb.baseline,
++                glyph_fs, false, false, color, false);
+         }
+         LayoutKind::Function(name) => {
+             draw_text(
+@@ -144,7 +129,7 @@
+                 name,
+                 x,
+                 y + lb.baseline,
+-                font_size_from_box(lb, fs),
++                fs,
+                 false,
+                 false,
+                 color,
+@@ -355,27 +340,12 @@
+                 } else {
+                     BIG_OP_SCALE
+                 };
+-            if is_integral {
+-                // Task #1317: 적분 기호는 stroke path 로 렌더(geom SSOT).
+-                draw_integral(canvas, x, y, fs, color);
+-            } else {
+-                let sup_h = sup.as_ref().map(|b| b.height + fs * 0.05).unwrap_or(0.0);
+-                let op_x = x + (lb.width - estimate_op_width(symbol, op_fs)) / 2.0;
+-                let op_y = y + sup_h + op_fs * 0.8;
+-                draw_text(
+-                    canvas,
+-                    font_mgr,
+-                    system_families,
+-                    symbol,
+-                    op_x,
+-                    op_y,
+-                    op_fs,
+-                    false,
+-                    false,
+-                    color,
+-                    false,
+-                );
+-            }
++            let metrics = text_metrics(symbol, op_fs, false, false);
++            let op_x = if is_integral { x } else {
++                x + (lb.width - fs * BIG_OP_TRAIL_PAD - metrics.width) / 2.0
++            };
++            draw_text(canvas, font_mgr, system_families, symbol, op_x,
++                y + lb.baseline, op_fs, false, false, color, false);
+             if let Some(sup) = sup {
+                 render_box(
+                     canvas,
+@@ -413,7 +383,7 @@
+                 system_families,
+                 name,
+                 x,
+-                y + fs * 0.8,
++                y + lb.baseline,
+                 fs,
+                 false,
+                 false,
+@@ -554,8 +524,9 @@
+             }
+         }
+         LayoutKind::Paren { left, right, body } => {
+-            let paren_w = fs * 0.333;
+-            let use_glyph = lb.height <= fs * 1.2;
++            let left_w = delimiter_width(left, fs, body.height);
++            let right_w = delimiter_width(right, fs, body.height);
++            let use_glyph = body.height <= fs * 1.2;
+             if !left.is_empty() {
+                 if use_glyph && (left == "(" || left == ")") {
+                     draw_text(
+@@ -579,7 +550,7 @@
+                         left,
+                         x,
+                         y,
+-                        paren_w,
++                        left_w,
+                         lb.height,
+                         color,
+                         fs,
+@@ -599,7 +570,7 @@
+                 bold,
+             );
+             if !right.is_empty() {
+-                let right_x = x + lb.width - paren_w;
++                let right_x = x + lb.width - right_w;
+                 if use_glyph && (right == "(" || right == ")") {
+                     draw_text(
+                         canvas,
+@@ -622,7 +593,7 @@
+                         right,
+                         right_x,
+                         y,
+-                        paren_w,
++                        right_w,
+                         lb.height,
+                         color,
+                         fs,
+@@ -672,6 +643,21 @@
+         }
+         LayoutKind::Space(_) | LayoutKind::Newline | LayoutKind::Empty => {}
+     }
++}
++
++// Match the exact packaged outlines used by layout even when no CM font is installed.
++fn computer_modern_typeface(font_mgr: &FontMgr, italic: bool, bold: bool) -> skia_safe::Typeface {
++    thread_local! {
++        static FACES: std::cell::OnceCell<[skia_safe::Typeface; 3]> = const { std::cell::OnceCell::new() };
++    }
++    FACES.with(|cache| {
++        let faces = cache.get_or_init(|| [
++            font_mgr.new_from_data(include_bytes!("../../../assets/fonts/computer-modern/ComputerModern-Regular.ttf"), None).expect("bundled CM Regular"),
++            font_mgr.new_from_data(include_bytes!("../../../assets/fonts/computer-modern/ComputerModern-Italic.ttf"), None).expect("bundled CM Italic"),
++            font_mgr.new_from_data(include_bytes!("../../../assets/fonts/computer-modern/ComputerModern-Bold.ttf"), None).expect("bundled CM Bold"),
++        ]);
++        faces[if bold { 2 } else if italic { 1 } else { 0 }].clone()
++    })
+ }
+
+ fn draw_text(
+@@ -690,18 +676,19 @@
+     if text.is_empty() {
+         return;
+     }
++    let italic = italic && !bold;
+     let font_style = match (bold, italic) {
+-        (true, true) => FontStyle::bold_italic(),
+-        (true, false) => FontStyle::bold(),
++        (true, _) => FontStyle::bold(),
+         (false, true) => FontStyle::italic(),
+         (false, false) => FontStyle::normal(),
+     };
+-    let typeface = EQ_FONT_FAMILY
++    let embedded = text.chars().all(|ch| crate::renderer::equation::metrics::face(italic, bold).glyph_index(ch).is_some());
++    let typeface = if embedded { Some(computer_modern_typeface(font_mgr, italic, bold)) } else { EQ_FONT_FAMILY
+         .split(',')
+         .map(str::trim)
+         .filter(|family| !family.is_empty())
+         .find_map(|family| match_system_family_style(font_mgr, system_families, family, font_style))
+-        .or_else(|| legacy_typeface_for_style(font_mgr, font_style));
++        .or_else(|| legacy_typeface_for_style(font_mgr, font_style)) };
+     let mut font = if let Some(typeface) = typeface {
+         Font::new(typeface, font_size as f32)
+     } else {
+@@ -710,18 +697,16 @@
+         font
+     };
+     font.set_edging(font::Edging::AntiAlias);
++    font.set_linear_metrics(true);
++    font.set_subpixel(true);
+
+     let mut paint = Paint::default();
+     paint.set_anti_alias(true);
+     paint.set_style(paint::Style::Fill);
+     paint.set_color(color);
+
+-    let draw_x = if centered {
+-        let (width, _) = font.measure_str(text, Some(&paint));
+-        x - f64::from(width) / 2.0
+-    } else {
+-        x
+-    };
++    let metrics = text_metrics(text, font_size, italic, bold);
++    let draw_x = x + metrics.left_pad - if centered { metrics.width / 2.0 } else { 0.0 };
+     canvas.draw_str(text, (draw_x as f32, baseline_y as f32), &font, &paint);
+ }
+
+@@ -943,46 +928,6 @@
+     }
+ }
+
+-fn font_size_from_box(lb: &LayoutBox, base_fs: f64) -> f64 {
+-    if lb.height > 0.0 {
+-        lb.height
+-    } else {
+-        base_fs
+-    }
+-}
+-
+-fn estimate_op_width(text: &str, fs: f64) -> f64 {
+-    text.chars().count() as f64 * fs * 0.6
+-}
+-
+-/// 적분 기호(∫)를 stroke path 로 렌더 (Task #1317).
+-///
+-/// svg_render.rs `integral_path` / canvas_render.rs `draw_integral` 와 동일한
+-/// `integral_geom` 기하·곡선을 사용해 SVG/Canvas/Skia 3경로가 정합한다. 폰트
+-/// 비의존으로 글리프 bbox 가 결정적이며 상·하한 attach point 와 어긋나지 않는다.
+-fn draw_integral(canvas: &Canvas, x: f64, y: f64, fs: f64, color: Color) {
+-    let g = integral_geom(fs);
+-    let h = g.bottom_y - g.top_y;
+-    let p0x = x + g.bottom_hook_x;
+-    let p0y = y + g.bottom_y;
+-    let p3x = x + g.top_hook_x;
+-    let p3y = y + g.top_y;
+-    let c1x = x + g.width * 1.02;
+-    let c1y = y + g.bottom_y - h * 0.30;
+-    let c2x = x - g.width * 0.10;
+-    let c2y = y + g.top_y + h * 0.30;
+-    let mut paint = stroke_paint(color, g.stroke_w);
+-    paint.set_stroke_cap(paint::Cap::Round);
+-    let mut path = PathBuilder::new();
+-    path.move_to((p0x as f32, p0y as f32));
+-    path.cubic_to(
+-        (c1x as f32, c1y as f32),
+-        (c2x as f32, c2y as f32),
+-        (p3x as f32, p3y as f32),
+-    );
+-    canvas.draw_path(&path.detach(), &paint);
+-}
+-
+ fn fill_paint(color: Color) -> Paint {
+     let mut paint = Paint::default();
+     paint.set_anti_alias(true);
+@@ -1007,3 +952,26 @@
+     let a = (255.0 * alpha_scale.clamp(0.0, 1.0)).round() as u8;
+     Color::from_argb(a, r, g, b)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn equation_faces_use_embedded_computer_modern_glyphs() {
++        let manager = FontMgr::new();
++        for (italic, bold, expected) in [
++            (false, false, FontStyle::normal()),
++            (true, false, FontStyle::italic()),
++            (false, true, FontStyle::bold()),
++            (true, true, FontStyle::bold()),
++        ] {
++            let face = computer_modern_typeface(&manager, italic, bold);
++            assert_eq!(face.family_name(), "Computer Modern");
++            assert_eq!(face.font_style(), expected);
++            for ch in "αβΓ∂∇∫∮∬∭∑∞≤≥×+=".chars() {
++                assert_ne!(face.unichar_to_glyph(ch as i32), 0, "missing {ch}");
++            }
++        }
++    }
++}

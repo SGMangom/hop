@@ -15,6 +15,7 @@ import {
   getDesktopFonts,
   getDesktopFontState,
   getDetectedDesktopFonts,
+  hasExactDesktopDerivedFont,
   isDesktopTauriRuntime,
   loadDesktopFontBytes,
   loadDesktopFontBytesFor,
@@ -127,6 +128,11 @@ export async function ensureLocalFontsAvailable(targetFamilies?: Iterable<string
     .map((record) => record.family)
     .filter((family) => !requested || requested.has(family))
     .filter((family) => !isAuthoringBlockedFontFamily(family)));
+}
+
+/** True only for a family backed by HOP's exact local HFT-derived standard-font cache. */
+export function hasExactLocalDerivedFont(fontName: string): boolean {
+  return isDesktopTauriRuntime() && hasExactDesktopDerivedFont(fontName);
 }
 
 function recordToEntry(record: LocalFontRecord): LocalFontEntry {

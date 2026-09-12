@@ -4,7 +4,7 @@ import { createHopOverrides } from './hop-overrides.ts';
 
 const upstreamSrc = resolve(import.meta.dirname, '../../third_party/rhwp/rhwp-studio/src');
 const hopSrc = resolve(import.meta.dirname, 'src');
-const rhwpWasmModule = resolve(import.meta.dirname, 'vendor/rhwp-core/rhwp.js');
+const rhwpWasmModule = resolve(import.meta.dirname, '../../target-local/rhwp-wasm/rhwp.js');
 
 export default defineConfig({
   test: {

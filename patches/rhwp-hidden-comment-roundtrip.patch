@@ -1,0 +1,268 @@
+--- a/src/serializer/hwpx/section.rs
++++ b/src/serializer/hwpx/section.rs
+@@ -1018,7 +1018,7 @@
+             }
+         };
+
+-    // Bookmark는 zero-width 라 slot char-position 축에 안 잡힌다.
++    // Bookmark/HiddenComment는 zero-width 라 slot char-position 축에 안 잡힌다.
+     // - [Task #1627] empty-text(객체-only) 문단: 문단 시작 강제는 원본 컨트롤 순서(예:
+     //   Table·PageNumberPos 뒤의 Bookmark)를 깨고 roundtrip char_shape 오프셋을 shift시킨다
+     //   → para.controls 순서대로 slot 사이에 in-order 방출.
+@@ -1028,12 +1028,18 @@
+     let bm_inorder = para.text.is_empty() || !slots.is_empty();
+     if !bm_inorder {
+         for ctrl in &para.controls {
+-            if let Control::Bookmark(bm) = ctrl {
+-                if let Ok(xml) = writer_to_string(|w| write_bookmark(w, bm)) {
+-                    splitter.content.push_str("<hp:ctrl>");
+-                    splitter.content.push_str(&xml);
+-                    splitter.content.push_str("</hp:ctrl>");
++            match ctrl {
++                Control::Bookmark(bm) => {
++                    if let Ok(xml) = writer_to_string(|w| write_bookmark(w, bm)) {
++                        splitter.content.push_str("<hp:ctrl>");
++                        splitter.content.push_str(&xml);
++                        splitter.content.push_str("</hp:ctrl>");
++                    }
+                 }
++                Control::HiddenComment(comment) => {
++                    splitter.content.push_str(&render_hidden_comment(comment, ctx));
++                }
++                _ => {}
+             }
+         }
+     }
+@@ -1044,6 +1050,9 @@
+     if slots.is_empty()
+         && para.field_ranges.is_empty()
+         && para.orphan_field_ends.is_empty()
++        && !para.controls.iter().any(|control| {
++            matches!(control, Control::Bookmark(_) | Control::HiddenComment(_))
++        })
+         && splitter.single_run()
+     {
+         let t = render_hp_t_content(&para.text, &para.tab_extended, &mut tab_idx);
+@@ -1063,13 +1072,20 @@
+                     para,
+                     &mut bm_done,
+                     slot_ctrl_indices[si],
++                    ctx,
+                 );
+             }
+             render_control_slot(&mut splitter.content, slot, ctx);
+         }
+         if bm_inorder {
+             // 마지막 slot 뒤에 오는 trailing bookmark.
+-            emit_inorder_bookmarks(&mut splitter.content, para, &mut bm_done, usize::MAX);
++            emit_inorder_bookmarks(
++                &mut splitter.content,
++                para,
++                &mut bm_done,
++                usize::MAX,
++                ctx,
++            );
+         }
+         // [Task #1591 v2] 균형 field_ranges 의 닫는 fieldEnd 도 말미 복원 — 이 경로는
+         // fieldBegin(슬롯)만 방출하고 fieldEnd 방출 코드가 없어 same-para 균형 필드가
+@@ -1110,6 +1126,7 @@
+                     para,
+                     &mut bm_done,
+                     slot_ctrl_indices[slot_idx],
++                    ctx,
+                 );
+             }
+             render_control_slot(&mut splitter.content, slots[slot_idx], ctx);
+@@ -1182,6 +1199,7 @@
+                     para,
+                     &mut bm_done,
+                     slot_ctrl_indices[slot_idx],
++                    ctx,
+                 );
+             }
+             render_control_slot(&mut splitter.content, slots[slot_idx], ctx);
+@@ -1364,6 +1382,7 @@
+                 para,
+                 &mut bm_done,
+                 slot_ctrl_indices[slot_idx],
++                ctx,
+             );
+         }
+         render_control_slot(&mut splitter.content, slots[slot_idx], ctx);
+@@ -1393,7 +1412,13 @@
+     }
+     if bm_inorder {
+         // 마지막 슬롯 뒤(컨트롤 순서 후미)의 trailing bookmark.
+-        emit_inorder_bookmarks(&mut splitter.content, para, &mut bm_done, usize::MAX);
++        emit_inorder_bookmarks(
++            &mut splitter.content,
++            para,
++            &mut bm_done,
++            usize::MAX,
++            ctx,
++        );
+     }
+
+     splitter.finish()
+@@ -1492,14 +1517,14 @@
+     }
+ }
+
+-/// [Task #1627] empty-text 문단에서 bookmark 를 para.controls 순서대로 in-order 방출한다.
+-/// `upto_ctrl_idx` 미만 인덱스의 미방출 bookmark 만 방출(usize::MAX = 나머지 전부).
+-/// bookmark 는 zero-width 라 char-position 을 점유하지 않으므로 slot 사이에 끼워도 위치 불변.
++/// zero-width 컨트롤(Bookmark/HiddenComment)을 para.controls 순서대로 in-order 방출한다.
++/// `upto_ctrl_idx` 미만 인덱스의 미방출 컨트롤만 방출(usize::MAX = 나머지 전부).
+ fn emit_inorder_bookmarks(
+     content: &mut String,
+     para: &Paragraph,
+     bm_done: &mut [bool],
+     upto_ctrl_idx: usize,
++    ctx: &mut SerializeContext,
+ ) {
+     for (i, ctrl) in para.controls.iter().enumerate() {
+         if i >= upto_ctrl_idx {
+@@ -1508,17 +1533,48 @@
+         if bm_done[i] {
+             continue;
+         }
+-        if let Control::Bookmark(bm) = ctrl {
+-            if let Ok(xml) = writer_to_string(|w| write_bookmark(w, bm)) {
+-                content.push_str("<hp:ctrl>");
+-                content.push_str(&xml);
+-                content.push_str("</hp:ctrl>");
++        match ctrl {
++            Control::Bookmark(bm) => {
++                if let Ok(xml) = writer_to_string(|w| write_bookmark(w, bm)) {
++                    content.push_str("<hp:ctrl>");
++                    content.push_str(&xml);
++                    content.push_str("</hp:ctrl>");
++                }
++                bm_done[i] = true;
+             }
+-            bm_done[i] = true;
++            Control::HiddenComment(comment) => {
++                content.push_str(&render_hidden_comment(comment, ctx));
++                bm_done[i] = true;
++            }
++            _ => {}
+         }
+     }
+ }
+
++/// `<hp:ctrl><hp:hiddenComment><hp:subList>…` — parser의 역매핑.
++/// 바깥 문단에서는 zero-width지만 내부 문단은 일반 편집 트리이므로 동일한 subList
++/// 직렬화 경로를 사용해 표/그림/필드 같은 중첩 컨트롤도 함께 보존한다.
++fn render_hidden_comment(
++    comment: &crate::model::control::HiddenComment,
++    ctx: &mut SerializeContext,
++) -> String {
++    let mut out = String::from("<hp:ctrl><hp:hiddenComment>");
++    out.push_str(&render_sub_list_open(None));
++    let mut vert_cursor = 0u32;
++    for para in &comment.paragraphs {
++        let (runs, linesegs, advance) = render_paragraph_parts(para, vert_cursor, ctx);
++        vert_cursor = advance;
++        let pid = ctx.next_para_id();
++        let sid = ctx.effective_style_id(para.style_id);
++        out.push_str(&render_hp_p_open(para, pid, sid));
++        out.push_str(&runs);
++        out.push_str(&linesegs);
++        out.push_str("</hp:p>");
++    }
++    out.push_str("</hp:subList></hp:hiddenComment></hp:ctrl>");
++    out
++}
++
+ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeContext) {
+     match control {
+         Control::Equation(eq) => {
+@@ -1625,16 +1681,8 @@
+         //     966행 근처 주석)만 소비하고 XML 은 별도 경로(`<hp:secPr>` 섹션 템플릿)가
+         //     방출한다 — 여기서 다시 방출하면 중복이 된다. warn 헬퍼도 이 변형은
+         //     무시한다.
+-        //   - `HiddenComment`: **구현 누락으로 확인됨(경고 미부착)**. HWPX 는
+-        //     `<hp:hiddenComment>` 네이티브 표현이 있고 파서(`parse_ctrl_hidden_comment`)
+-        //     는 이미 sub-paragraph 까지 온전히 읽지만 직렬화기엔 대응 방출 arm 이
+-        //     없다. 다만 이 컨트롤은 PARA_TEXT 상 폭이 0(파서가 위치 마커를 push 하지
+-        //     않음 — Bookmark 와 동형)이라 실제 문서에서는 `render_runs` 의
+-        //     mismatch-분기 필터(위쪽, "제외된 hidden 슬롯 후보" 블록 부근)에서 먼저
+-        //     걸러져 이 함수 자체에 거의 도달하지 않는다 — 진짜 수정은 Bookmark 의
+-        //     `emit_inorder_bookmarks` 류 zero-width in-order 방출 인프라가 필요한
+-        //     별도 작업(그 로직은 #1591/#1627/#1584 이력이 보여주듯 섬세하다) —
+-        //     후속 이슈로 분리 권장.
++        //   - `HiddenComment`: zero-width in-order 방출 경로가 위에서 처리한다. 이 arm에
++        //     도달해도 중복 XML을 만들지 않는다.
+         c => warn_if_unrepresentable_in_hwpx(c),
+     }
+ }
+@@ -3225,6 +3273,69 @@
+             tbl_pos < bm_pos,
+             "bookmark 가 table 뒤(원본 순서)에 와야 함 — 문단 시작 강제 회귀 (#1627)"
+         );
++    }
++
++    #[test]
++    fn hidden_comment_serializes_in_order_and_roundtrips_nested_text() {
++        use crate::model::control::{Control, HiddenComment};
++        use crate::parser::hwpx::section::parse_hwpx_section;
++
++        let mut inner = Paragraph::default();
++        inner.text = "숨은 설명 본문".to_string();
++
++        let mut para = Paragraph::default();
++        para.controls = vec![
++            Control::Table(Box::default()),
++            Control::HiddenComment(Box::new(HiddenComment {
++                paragraphs: vec![inner],
++            })),
++        ];
++
++        let (doc, section) = make_doc_with_paragraph(para);
++        let mut ctx = SerializeContext::collect_from_document(&doc);
++        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
++
++        let table_pos = xml.find("<hp:tbl").expect("table XML");
++        let comment_pos = xml.find("<hp:hiddenComment>").expect("hiddenComment XML");
++        assert!(table_pos < comment_pos, "zero-width hiddenComment가 원본 control 순서를 보존해야 함");
++        assert!(xml.contains("숨은 설명 본문"));
++
++        let reparsed = parse_hwpx_section(&xml).expect("section reparse");
++        let controls = &reparsed.paragraphs[0].controls;
++        let comment = controls
++            .iter()
++            .find_map(|control| match control {
++                Control::HiddenComment(comment) => Some(comment),
++                _ => None,
++            })
++            .expect("hiddenComment control survives");
++        assert_eq!(comment.paragraphs.len(), 1);
++        assert_eq!(comment.paragraphs[0].text, "숨은 설명 본문");
++    }
++
++    #[test]
++    fn hidden_comment_only_empty_host_is_not_lost_to_text_fast_path() {
++        use crate::model::control::{Control, HiddenComment};
++        use crate::parser::hwpx::section::parse_hwpx_section;
++
++        let mut inner = Paragraph::default();
++        inner.text = "단독 숨은 설명".to_string();
++        let mut host = Paragraph::default();
++        host.controls.push(Control::HiddenComment(Box::new(HiddenComment {
++            paragraphs: vec![inner],
++        })));
++
++        let (doc, section) = make_doc_with_paragraph(host);
++        let mut ctx = SerializeContext::collect_from_document(&doc);
++        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
++        assert!(xml.contains("<hp:hiddenComment>"));
++        assert!(xml.contains("단독 숨은 설명"));
++
++        let reparsed = parse_hwpx_section(&xml).expect("section reparse");
++        assert!(reparsed.paragraphs[0]
++            .controls
++            .iter()
++            .any(|control| matches!(control, Control::HiddenComment(_))));
+     }
+
+     fn make_doc_with_paragraph(para: Paragraph) -> (Document, Section) {

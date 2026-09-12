@@ -6,15 +6,19 @@ import type {
   LocalFontState,
 } from '@/upstream/local-fonts';
 import { REGISTERED_FONTS } from './font-catalog';
-import { filterAuthoringFontFamilies, isAuthoringBlockedFontFamily } from './font-authoring-policy';
+import {
+  filterAuthoringFontFamilies,
+  isAuthoringFontFamilyAllowed,
+} from './font-authoring-policy';
 
 export interface LocalFontEntry {
   family: string;
   postScriptName: string;
   style: string;
   weight?: number;
-  sourceKind: 'system-installed' | 'file-backed';
+  sourceKind: 'system-installed' | 'file-backed' | 'hft-derived';
   path?: string | null;
+  aliases?: string[];
 }
 
 let cachedFontEntries: LocalFontEntry[] | null = null;
@@ -83,8 +87,27 @@ export function resolveDesktopFont(fontName: string): LocalFontRecord | null {
 
   const familyMatches = entries.filter((entry) => normalizeFontName(entry.family) === normalized);
   if (familyMatches.length === 1) return toLocalFontRecord(familyMatches[0]);
-  const regularMatch = familyMatches.find((entry) => /^(normal|regular|roman|book)$/i.test(entry.style));
-  return regularMatch ? toLocalFontRecord(regularMatch) : null;
+  const regularMatch = preferredRegularEntry(familyMatches);
+  if (regularMatch) return toLocalFontRecord(regularMatch);
+
+  // HFT/HWP family spelling frequently differs only by spaces, '-' or '_'
+  // (e.g. "HCI Poppy" vs "HCIPoppy").  Never apply this fuzzy key to
+  // arbitrary local/system fonts: it is safe only for a face proven to come
+  // from HOP's private HFT-derived cache.
+  const aliasKey = fontFamilyAliasKey(fontName);
+  if (!aliasKey) return null;
+  const derivedMatches = entries.filter((entry) => isHftDerivedEntry(entry)
+    && entryNames(entry).some((name) => fontFamilyAliasKey(name) === aliasKey));
+  if (derivedMatches.length === 1) return toLocalFontRecord(derivedMatches[0]);
+  const derivedRegular = preferredRegularEntry(derivedMatches);
+  return derivedRegular ? toLocalFontRecord(derivedRegular) : null;
+}
+
+export function hasExactDesktopDerivedFont(fontName: string): boolean {
+  const key = fontFamilyAliasKey(fontName);
+  if (!key) return false;
+  return (cachedFontEntries ?? []).some((entry) => isHftDerivedEntry(entry)
+    && entryNames(entry).some((name) => fontFamilyAliasKey(name) === key));
 }
 
 export async function loadDesktopFontBytesFor(
@@ -148,14 +171,12 @@ export async function ensureDesktopFontsAvailable(
   const entries = await detectDesktopFontEntries();
   const available = new Set(entries
     .filter((entry) => entry.sourceKind === 'system-installed')
-    .filter((entry) => !isAuthoringBlockedFontFamily(entry.family))
+    .filter((entry) => isAuthoringFontFamilyAllowed(entry.family, false))
     .map((entry) => entry.family));
   if (!supportsBinaryFontLoading()) return available;
 
-  const requested = resolveRequestedFamilies(entries, targetFamilies);
-  const groups = groupEntriesByPath(entries.filter((entry) =>
-    entry.sourceKind === 'file-backed' && Boolean(entry.path) && requested.has(entry.family),
-  ));
+  const requested = resolveRequestedEntries(entries, targetFamilies);
+  const groups = groupEntriesByPath([...requested.keys()]);
   await Promise.all([...groups].map(async ([path, pathEntries]) => {
     let fontBytes: Uint8Array;
     try {
@@ -164,12 +185,18 @@ export async function ensureDesktopFontsAvailable(
       return;
     }
     for (const entry of pathEntries) {
+      const requestedNames = requested.get(entry) ?? [entry.family];
       try {
-        if (!await ensureDesktopFontFace(entry, fontBytes)) continue;
+        if (!await ensureDesktopFontFaces(entry, fontBytes, requestedNames)) continue;
       } catch {
         continue;
       }
-      if (!isAuthoringBlockedFontFamily(entry.family)) available.add(entry.family);
+      const exactDerived = isHftDerivedEntry(entry);
+      if (isAuthoringFontFamilyAllowed(entry.family, exactDerived)) {
+        available.add(entry.family);
+        for (const alias of entry.aliases ?? []) available.add(alias);
+        for (const requestedName of requestedNames) available.add(requestedName);
+      }
     }
   }));
   return available;
@@ -191,11 +218,25 @@ async function readDesktopFontBytes(path: string): Promise<Uint8Array> {
   return pending;
 }
 
-async function ensureDesktopFontFace(entry: LocalFontEntry, bytes: Uint8Array): Promise<boolean> {
-  const key = fontEntryKey(entry);
+async function ensureDesktopFontFaces(
+  entry: LocalFontEntry,
+  bytes: Uint8Array,
+  requestedNames: readonly string[],
+): Promise<boolean> {
+  const familyNames = uniqueFamilies([entry.family, ...(entry.aliases ?? []), ...requestedNames]);
+  const results = await Promise.all(familyNames.map((family) => ensureDesktopFontFace(entry, family, bytes)));
+  return results.some(Boolean);
+}
+
+async function ensureDesktopFontFace(
+  entry: LocalFontEntry,
+  family: string,
+  bytes: Uint8Array,
+): Promise<boolean> {
+  const key = `${fontEntryKey(entry)}\u0000${normalizeFontName(family)}`;
   let state = loadedFontFaces.get(key);
   if (!state) {
-    state = { pending: loadDesktopFontFace(entry, bytes) };
+    state = { pending: loadDesktopFontFace(entry, family, bytes) };
     loadedFontFaces.set(key, state);
   }
   let face: FontFace;
@@ -213,10 +254,10 @@ async function ensureDesktopFontFace(entry: LocalFontEntry, bytes: Uint8Array): 
   return true;
 }
 
-async function loadDesktopFontFace(entry: LocalFontEntry, bytes: Uint8Array): Promise<FontFace> {
+async function loadDesktopFontFace(entry: LocalFontEntry, family: string, bytes: Uint8Array): Promise<FontFace> {
   const descriptors: FontFaceDescriptors = { style: entry.style || 'normal' };
   if (entry.weight) descriptors.weight = String(entry.weight);
-  const face = new FontFace(entry.family, bytes.slice(), descriptors);
+  const face = new FontFace(family, bytes.slice(), descriptors);
   return face.load();
 }
 
@@ -232,6 +273,7 @@ function normalizeFontEntries(entries: LocalFontEntry[]): LocalFontEntry[] {
       weight: entry.weight,
       sourceKind: entry.sourceKind ?? 'system-installed',
       path: entry.path ?? null,
+      aliases: uniqueFamilies((entry.aliases ?? []).map((alias) => alias.trim()).filter(Boolean)),
     };
     byKey.set(fontEntryKey(normalized), normalized);
   }
@@ -249,7 +291,7 @@ function toLocalFontRecord(entry: LocalFontEntry): LocalFontRecord {
     postscriptName: entry.postScriptName,
     style: entry.style,
     displayName: entry.family,
-    aliases: Array.from(new Set([entry.family, entry.postScriptName].filter(Boolean))),
+    aliases: Array.from(new Set([entry.family, entry.postScriptName, ...(entry.aliases ?? [])].filter(Boolean))),
   };
 }
 
@@ -263,11 +305,28 @@ function desktopSnapshot(): LocalFontSnapshot {
   };
 }
 
-function resolveRequestedFamilies(entries: LocalFontEntry[], targetFamilies?: Iterable<string>): Set<string> {
-  const families = targetFamilies ? Array.from(targetFamilies) : entries.map((entry) => entry.family);
-  return new Set(families.map((family) => family.trim()).filter((family) =>
-    family && !isAuthoringBlockedFontFamily(family),
-  ));
+function resolveRequestedEntries(
+  entries: LocalFontEntry[],
+  targetFamilies?: Iterable<string>,
+): Map<LocalFontEntry, string[]> {
+  const requestedNames = targetFamilies
+    ? Array.from(targetFamilies).map((family) => family.trim()).filter(Boolean)
+    : entries.map((entry) => entry.family);
+  const requested = new Map<LocalFontEntry, string[]>();
+  for (const entry of entries) {
+    if (!entry.path || (entry.sourceKind !== 'file-backed' && entry.sourceKind !== 'hft-derived')) continue;
+    const exactDerived = isHftDerivedEntry(entry);
+    if (!isAuthoringFontFamilyAllowed(entry.family, exactDerived)) continue;
+    const names = entryNames(entry);
+    const strictKeys = new Set(names.map(normalizeFontName));
+    const aliasKeys = exactDerived ? new Set(names.map(fontFamilyAliasKey)) : null;
+    const matches = requestedNames.filter((requestedName) => {
+      if (strictKeys.has(normalizeFontName(requestedName))) return true;
+      return aliasKeys?.has(fontFamilyAliasKey(requestedName)) ?? false;
+    });
+    if (matches.length > 0) requested.set(entry, matches);
+  }
+  return requested;
 }
 
 function groupEntriesByPath(entries: LocalFontEntry[]): Map<string, LocalFontEntry[]> {
@@ -288,7 +347,7 @@ function localFontFaceKey(record: Pick<LocalFontRecord, 'family' | 'fullName' | 
 }
 
 function uniqueAuthoringFamilies(families: Iterable<string>): string[] {
-  return uniqueFamilies(filterAuthoringFontFamilies(families));
+  return uniqueFamilies(filterAuthoringFontFamilies(families, hasExactDesktopDerivedFont));
 }
 
 function uniqueFamilies(families: Iterable<string>): string[] {
@@ -297,6 +356,30 @@ function uniqueFamilies(families: Iterable<string>): string[] {
 
 function normalizeFontName(value: string): string {
   return value.normalize('NFC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
+}
+
+export function fontFamilyAliasKey(value: string): string {
+  return value
+    .replace(/\u0000/g, '')
+    .normalize('NFC')
+    .replace(/["']/g, '')
+    .replace(/[\s_-]+/g, '')
+    .trim()
+    .toLocaleLowerCase('ko-KR');
+}
+
+function isHftDerivedEntry(entry: LocalFontEntry): boolean {
+  return entry.sourceKind === 'hft-derived';
+}
+
+function entryNames(entry: LocalFontEntry): string[] {
+  return [entry.family, entry.postScriptName, ...(entry.aliases ?? [])].filter(Boolean);
+}
+
+function preferredRegularEntry(entries: readonly LocalFontEntry[]): LocalFontEntry | undefined {
+  return entries
+    .filter((entry) => /^(normal|regular|roman|book)$/i.test(entry.style))
+    .sort((left, right) => Math.abs((left.weight ?? 400) - 400) - Math.abs((right.weight ?? 400) - 400))[0];
 }
 
 function supportsBinaryFontLoading(): boolean {

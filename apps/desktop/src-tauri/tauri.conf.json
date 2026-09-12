@@ -4,7 +4,7 @@
   "version": "0.4.4",
   "identifier": "net.golbin.hop",
   "build": {
-    "beforeDevCommand": "cd ../.. && pnpm --filter @golbin/hop-studio-host dev",
+    "beforeDevCommand": "cd ../.. && pnpm run engine:wasm && pnpm --filter @golbin/hop-studio-host dev",
     "beforeBuildCommand": "cd ../.. && pnpm run build:before-tauri",
     "devUrl": "http://127.0.0.1:7700",
     "frontendDist": "../../studio-host/dist"
@@ -43,6 +43,11 @@
       "../../../assets/logo/favicon.ico"
     ],
     "resources": {
+      "../../../assets/fonts/computer-modern/ComputerModern-Regular.ttf": "fonts/pdf/ComputerModern-Regular.ttf",
+      "../../../assets/fonts/computer-modern/ComputerModern-Italic.ttf": "fonts/pdf/ComputerModern-Italic.ttf",
+      "../../../assets/fonts/computer-modern/ComputerModern-Bold.ttf": "fonts/pdf/ComputerModern-Bold.ttf",
+      "../../../assets/fonts/computer-modern/LICENSE.txt": "fonts/pdf/ComputerModern-LICENSE.txt",
+      "../../../assets/fonts/computer-modern/README.md": "fonts/pdf/ComputerModern-README.md",
       "../../../third_party/rhwp/ttfs/opensource/NotoSansKR-Regular.ttf": "fonts/pdf/NotoSansKR-Regular.ttf",
       "../../../third_party/rhwp/ttfs/opensource/NotoSansKR-OFL.txt": "fonts/pdf/NotoSansKR-OFL.txt"
     },

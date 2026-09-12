@@ -32,7 +32,7 @@ fn free_accepts_null() {
 
 #[test]
 fn renders_sample_preview_pdf() {
-    let data = std::fs::read(sample_path()).expect("sample hwp");
+    let data = sample_hwp_bytes();
     let result = hop_ql_render_preview_pdf(data.as_ptr(), data.len());
     assert_eq!(result.status, HOP_QL_OK);
     assert!(result.page_count > 0);
@@ -47,7 +47,7 @@ fn renders_sample_preview_pdf() {
 
 #[test]
 fn renders_sample_first_page_png() {
-    let data = std::fs::read(sample_path()).expect("sample hwp");
+    let data = sample_hwp_bytes();
     let result = hop_ql_render_first_page_png(data.as_ptr(), data.len(), 512);
     assert_eq!(result.status, HOP_QL_OK);
     assert!(result.page_count > 0);
@@ -58,7 +58,10 @@ fn renders_sample_first_page_png() {
     }
 }
 
-fn sample_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../third_party/rhwp/samples/text-align-2.hwp")
+fn sample_hwp_bytes() -> Vec<u8> {
+    let mut core = hop_rhwp_adapter::DocumentCore::new_empty();
+    core.create_blank_document_native()
+        .expect("create blank fixture document");
+    core.export_hwp_native()
+        .expect("serialize fixture hwp")
 }

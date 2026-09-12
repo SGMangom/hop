@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { loadWebFontsMock } = vi.hoisted(() => ({
+const { loadWebFontsMock, hasExactLocalDerivedFontMock } = vi.hoisted(() => ({
   loadWebFontsMock: vi.fn(),
+  hasExactLocalDerivedFontMock: vi.fn((_name: string) => false),
 }));
 
 vi.mock('@/core/font-loader', () => ({
@@ -16,6 +17,7 @@ vi.mock('@/upstream/core', () => ({
 
 vi.mock('@/core/local-fonts', () => ({
   getLocalFonts: () => [],
+  hasExactLocalDerivedFont: hasExactLocalDerivedFontMock,
 }));
 
 vi.mock('./custom-select', () => ({
@@ -63,6 +65,8 @@ function createToolbarHarness() {
 describe('Toolbar font application sequencing', () => {
   beforeEach(() => {
     loadWebFontsMock.mockReset();
+    hasExactLocalDerivedFontMock.mockReset();
+    hasExactLocalDerivedFontMock.mockReturnValue(false);
   });
 
   it('ignores stale single-font selections when a newer selection finishes first', async () => {
@@ -147,6 +151,21 @@ describe('Toolbar font application sequencing', () => {
 
     expect(loadWebFontsMock).toHaveBeenCalledWith(['함초롬돋움']);
     expect(wasm.findOrCreateFontId).toHaveBeenCalledWith('함초롬돋움');
+    expect(emit).toHaveBeenCalledWith('format-char', { fontId: 101 });
+  });
+
+  it('keeps the exact restricted family when an HFT-derived face exists', async () => {
+    loadWebFontsMock.mockResolvedValue(undefined);
+    hasExactLocalDerivedFontMock.mockImplementation((name: string) => name.replace(/\s+/g, '') === 'HCIPoppy');
+    const { toolbar, emit, wasm } = createToolbarHarness();
+    const applyFontSelection = (
+      Toolbar.prototype as unknown as Record<string, (this: object, name: string) => Promise<void>>
+    ).applyFontSelection;
+
+    await applyFontSelection.call(toolbar, 'HCI Poppy');
+
+    expect(loadWebFontsMock).toHaveBeenCalledWith(['HCI Poppy']);
+    expect(wasm.findOrCreateFontId).toHaveBeenCalledWith('HCI Poppy');
     expect(emit).toHaveBeenCalledWith('format-char', { fontId: 101 });
   });
 

@@ -32,6 +32,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tempfile = "3"
 open = "5"
 usvg = "0.45"
+encoding_rs = "0.8"
+sha2 = "0.10"
+unicode-normalization = "0.1"
 
 [patch.crates-io]
 # rhwp #2269: keep PDF object/resource ordering deterministic until svg2pdf is replaced upstream.

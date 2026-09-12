@@ -1,5 +1,8 @@
 use crate::pending_open::PendingOpenPaths;
-use hop_rhwp_adapter::{split_paragraph_for_editing, DocumentCore};
+use hop_rhwp_adapter::{
+    detect_serialized_document_format, split_paragraph_for_editing, DocumentCore,
+    SerializedDocumentFormat,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -194,18 +197,35 @@ impl DocumentSessionManager {
         expected_revision: Option<u64>,
         allow_external_overwrite: bool,
     ) -> Result<SaveResult, String> {
+        if DocumentFormat::from_path(&target_path)? != DocumentFormat::Hwp {
+            return Err(
+                "HWPX 경로에는 HWP 바이트를 저장할 수 없습니다. .hwp 파일로 저장하세요."
+                    .to_string(),
+            );
+        }
+        self.commit_staged_document_save(
+            doc_id,
+            staged_path,
+            target_path,
+            expected_revision,
+            allow_external_overwrite,
+        )
+    }
+
+    pub fn commit_staged_document_save(
+        &mut self,
+        doc_id: &str,
+        staged_path: PathBuf,
+        target_path: PathBuf,
+        expected_revision: Option<u64>,
+        allow_external_overwrite: bool,
+    ) -> Result<SaveResult, String> {
         let session = self.session_mut(doc_id)?;
         session.check_revision(expected_revision)?;
         if !allow_external_overwrite {
             session.check_external_modification_for_path(&target_path)?;
         }
         let format = DocumentFormat::from_path(&target_path)?;
-        if format == DocumentFormat::Hwpx {
-            return Err(
-                "HWPX 경로에는 HWP 바이트를 저장할 수 없습니다. .hwp 파일로 저장하세요."
-                    .to_string(),
-            );
-        }
         let bytes = std::fs::read(&staged_path).map_err(|e| {
             format!(
                 "staging 파일을 읽을 수 없습니다: {} ({})",
@@ -213,9 +233,22 @@ impl DocumentSessionManager {
                 e
             )
         })?;
+        let detected = detect_serialized_document_format(&bytes)
+            .ok_or_else(|| "staging 파일이 유효한 HWP/HWPX 문서가 아닙니다".to_string())?;
+        let detected_format = match detected {
+            SerializedDocumentFormat::Hwp => DocumentFormat::Hwp,
+            SerializedDocumentFormat::Hwpx => DocumentFormat::Hwpx,
+        };
+        if detected_format != format {
+            return Err(format!(
+                "저장 형식과 파일 내용이 일치하지 않습니다: 경로는 {}, 내용은 {}입니다",
+                format.label(),
+                detected_format.label(),
+            ));
+        }
         let core =
             editable_core_from_bytes(&bytes, "저장 바이트 검증 실패", "저장 문서 변환 실패")?;
-        session.finish_hwp_save(target_path, &bytes, Some(core))?;
+        session.finish_document_save(target_path, format, &bytes, Some(core))?;
         let _ = std::fs::remove_file(&staged_path);
         Ok(session.save_result())
     }
@@ -564,9 +597,10 @@ impl DocumentSession {
         Ok(())
     }
 
-    fn finish_hwp_save(
+    fn finish_document_save(
         &mut self,
         target_path: PathBuf,
+        format: DocumentFormat,
         bytes: &[u8],
         core_override: Option<DocumentCore>,
     ) -> Result<(), String> {
@@ -576,7 +610,7 @@ impl DocumentSession {
             self.core = Some(core);
         }
         self.source_path = Some(target_path);
-        self.source_format = DocumentFormat::Hwp;
+        self.source_format = format;
         self.refresh_source_fingerprint_from_bytes(bytes)?;
         self.revision += 1;
         self.dirty = false;
@@ -614,6 +648,13 @@ impl DocumentFormat {
                 "지원하지 않는 문서 확장자입니다: {}",
                 path.display()
             )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Hwp => "HWP",
+            Self::Hwpx => "HWPX",
         }
     }
 }
@@ -1011,6 +1052,78 @@ mod tests {
             opened.revision + 1
         );
         assert!(!manager.session(&opened.doc_id).unwrap().dirty);
+    }
+
+    #[test]
+    fn commit_staged_document_save_accepts_hwpx_and_records_source_format() {
+        let mut manager = DocumentSessionManager::default();
+        let opened = manager.create_document().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let staged_path = dir.path().join("save.tmp");
+        let target_path = dir.path().join("saved.hwpx");
+
+        let bytes = manager
+            .session(&opened.doc_id)
+            .unwrap()
+            .core
+            .as_ref()
+            .unwrap()
+            .export_hwpx_native()
+            .unwrap();
+        std::fs::write(&staged_path, &bytes).unwrap();
+
+        let result = manager
+            .commit_staged_document_save(
+                &opened.doc_id,
+                staged_path.clone(),
+                target_path.clone(),
+                Some(opened.revision),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(result.format, DocumentFormat::Hwpx);
+        assert_eq!(
+            result.source_path.as_deref(),
+            Some(target_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(std::fs::read(&target_path).unwrap(), bytes);
+        assert!(!staged_path.exists());
+        assert_eq!(
+            manager.session(&opened.doc_id).unwrap().source_format,
+            DocumentFormat::Hwpx
+        );
+    }
+
+    #[test]
+    fn commit_staged_document_save_rejects_extension_content_mismatch() {
+        let mut manager = DocumentSessionManager::default();
+        let opened = manager.create_document().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let staged_path = dir.path().join("save.tmp");
+        let target_path = dir.path().join("saved.hwpx");
+        let hwp_bytes = manager
+            .session(&opened.doc_id)
+            .unwrap()
+            .core
+            .as_ref()
+            .unwrap()
+            .export_hwp_native()
+            .unwrap();
+        std::fs::write(&staged_path, hwp_bytes).unwrap();
+
+        let error = manager
+            .commit_staged_document_save(
+                &opened.doc_id,
+                staged_path.clone(),
+                target_path,
+                Some(opened.revision),
+                false,
+            )
+            .unwrap_err();
+
+        assert!(error.contains("저장 형식과 파일 내용이 일치하지 않습니다"));
+        assert!(staged_path.exists());
     }
 
     #[test]

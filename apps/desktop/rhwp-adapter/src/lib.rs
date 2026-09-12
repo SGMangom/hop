@@ -9,6 +9,26 @@ pub use rhwp::parser::extract_thumbnail_only;
 pub use rhwp::DocumentCore;
 use std::path::PathBuf;
 
+/// Format of a serialized document produced by the editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerializedDocumentFormat {
+    Hwp,
+    Hwpx,
+}
+
+/// Detect the two desktop save formats HOP supports.
+///
+/// Keeping this behind the adapter avoids leaking the upstream parser enum into
+/// the product crate while still letting the native commit path reject an
+/// extension/content mismatch before replacing the user's file.
+pub fn detect_serialized_document_format(bytes: &[u8]) -> Option<SerializedDocumentFormat> {
+    match rhwp::parser::detect_format(bytes) {
+        rhwp::parser::FileFormat::Hwp => Some(SerializedDocumentFormat::Hwp),
+        rhwp::parser::FileFormat::Hwpx => Some(SerializedDocumentFormat::Hwpx),
+        _ => None,
+    }
+}
+
 /// Split a paragraph for a normal HOP editing action.
 ///
 /// Upstream also accepts paragraph metadata for merge-undo restoration. That

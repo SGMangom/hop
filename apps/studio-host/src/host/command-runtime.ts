@@ -3,9 +3,6 @@ import type { InputHandler } from '@/upstream/editor';
 import {
   CommandDispatcher,
   CommandRegistry,
-  formatCommands,
-  insertCommands,
-  pageCommands,
   tableCommands,
   toolCommands,
   viewCommands,
@@ -14,6 +11,11 @@ import type { CommandDef, CommandServices, EditorContext, EditorEditMode } from 
 import type { DocumentDirtyState, EventBus, WasmBridge } from '@/upstream/core';
 import { editCommands } from '@/command/commands/edit';
 import { fileCommands } from '@/command/commands/file';
+import { insertCommands, installHyperlinkToolbarEntry } from '../command/commands/insert';
+import { formatCommands } from '../command/commands/format';
+import { pageCommands } from '../command/commands/page';
+import { documentInfoCommands, installDocumentInfoMenuEntry } from '../command/commands/document-info';
+import { documentStatisticsCommands, installDocumentStatisticsMenuEntry } from '../command/commands/document-statistics';
 import { assertUniqueCommandIds } from '../command/replace-upstream-commands';
 
 interface CommandRuntimeDependencies {
@@ -38,6 +40,8 @@ export interface CommandRuntime {
  */
 const commandContributions: readonly CommandDef[][] = [
   fileCommands,
+  documentInfoCommands,
+  documentStatisticsCommands,
   editCommands,
   viewCommands,
   formatCommands,
@@ -59,6 +63,8 @@ export function createCommandRuntime(dependencies: CommandRuntimeDependencies): 
     const hasDocument = wasm.pageCount > 0;
     const canEditFormField = inputHandler?.canEditCurrentFormField() ?? false;
     const isFormMode = editMode === 'form';
+    const selectedPictures = inputHandler?.getSelectedPictureRefs?.() ?? [];
+    const selectedPicture = inputHandler?.getSelectedPictureRef?.() ?? null;
     return {
       hasDocument,
       hasSelection: inputHandler?.hasSelection() ?? false,
@@ -81,7 +87,10 @@ export function createCommandRuntime(dependencies: CommandRuntimeDependencies): 
       showParagraphMarks: wasm.getShowParagraphMarks(),
       isDirty: documentState.isDirty(),
       sourceFormat: hasDocument ? (wasm.getSourceFormat() as 'hwp' | 'hwpx' | 'hml') : undefined,
-    };
+      selectedPictureType: selectedPicture?.type,
+      selectedPictureTypes: selectedPictures.map((ref) => ref.type),
+      selectedPictureCount: selectedPictures.length,
+    } as EditorContext;
   };
 
   const setEditMode = (mode: EditorEditMode): void => {
@@ -108,6 +117,9 @@ export function createCommandRuntime(dependencies: CommandRuntimeDependencies): 
   };
   const dispatcher = new CommandDispatcher(registry, services, eventBus);
   for (const commands of commandContributions) registry.registerAll(commands);
+  installHyperlinkToolbarEntry();
+  installDocumentInfoMenuEntry();
+  installDocumentStatisticsMenuEntry();
 
   return { registry, dispatcher, services, getEditMode: () => editMode };
 }

@@ -2,15 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import studioHtml from '../../index.html?raw';
 import type { CommandDef } from '@/upstream/commands';
 import {
-  insertCommands,
   formatCommands,
-  pageCommands,
   tableCommands,
   toolCommands,
   viewCommands,
 } from '@/upstream/commands';
 import { editCommands } from './commands/edit';
 import { fileCommands } from './commands/file';
+import { insertCommands } from './commands/insert';
+import { pageCommands } from './commands/page';
 import { assertUniqueCommandIds, replaceUpstreamCommands } from './replace-upstream-commands';
 import { defaultShortcuts } from './shortcut-map';
 

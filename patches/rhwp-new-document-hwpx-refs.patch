@@ -1,0 +1,84 @@
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -617,6 +617,33 @@
+         section.paragraphs.push(Paragraph::new_empty());
+         let mut document = Document::default();
+         document.sections.push(section);
++
++        // Generated documents use canonical ref 0 for their first paragraph/style, and
++        // `create_table_native` inherits those same ids into the table host + cell paragraphs.
++        // A bare `Document::default()` has no DocInfo rows, so the HWPX writer used to see
++        // explicit charPrIDRef=0 / paraPrIDRef=0 with no matching definitions and reject the
++        // save. Materialize exactly those generated defaults here instead of weakening the
++        // serializer's dangling-reference gate for imported documents.
++        let mut char_shape = crate::model::style::CharShape::default();
++        char_shape.base_size = crate::serializer::hwpx::canonical_defaults::CHARSHAPE_HEIGHT as i32;
++        char_shape.ratios = [100; 7];
++        document.doc_info.char_shapes.push(char_shape);
++
++        let mut para_shape = crate::model::style::ParaShape::default();
++        if crate::serializer::hwpx::canonical_defaults::PARASHAPE_SNAP_TO_GRID {
++            para_shape.attr1 |= 1 << 8;
++        }
++        document.doc_info.para_shapes.push(para_shape);
++
++        document.doc_info.styles.push(crate::model::style::Style {
++            local_name: "바탕글".to_string(),
++            english_name: "Normal".to_string(),
++            lang_id: 1042,
++            para_shape_id: 0,
++            char_shape_id: 0,
++            ..Default::default()
++        });
++
+         core.set_document(document);
+         HwpDocument { core }
+     }
+--- a/src/wasm_api/tests.rs
++++ b/src/wasm_api/tests.rs
+@@ -27798,13 +27798,40 @@
+ }
+
+ #[test]
+-fn create_empty_table_hwpx_export_known_limitation() {
+-    // 기존 한계 고정: create_empty 문서는 HWPX ID 맵(charPr/paraPr/style 0)
+-    // 미등록으로 표 유무와 무관하게 export 가 거부된다. split 탓이 아님을
+-    // 대조 실험으로 봉인해 둔다 (해소되면 이 테스트를 뒤집을 것).
++fn create_empty_table_hwpx_export_roundtrips() {
+     let mut doc = HwpDocument::create_empty();
++    assert_eq!(doc.document.doc_info.char_shapes.len(), 1);
++    assert_eq!(doc.document.doc_info.para_shapes.len(), 1);
++    assert_eq!(doc.document.doc_info.styles.len(), 1);
++
+     doc.create_table_native(0, 0, 0, 4, 2).expect("표");
+-    assert!(doc.export_hwpx_native().is_err());
++    assert_eq!(
++        doc.document.doc_info.border_fills.len(),
++        1,
++        "생성 표가 실제 참조하는 solid borderFill 하나만 materialize"
++    );
++
++    let out = doc.export_hwpx_native().expect("create_empty 표 HWPX 저장");
++    let reopened = HwpDocument::from_bytes(&out).expect("create_empty 표 HWPX 재열기");
++    assert!(!reopened.document.doc_info.char_shapes.is_empty());
++    assert!(!reopened.document.doc_info.para_shapes.is_empty());
++    assert!(!reopened.document.doc_info.styles.is_empty());
++
++    let tables = table_control_paras(&reopened);
++    assert_eq!(tables.len(), 1, "삽입한 표가 HWPX 왕복 후 보존되어야 한다");
++    let table = issue_1481_table(&reopened, tables[0]);
++    assert_eq!(
++        (table.row_count, table.col_count, table.cells.len()),
++        (4, 2, 8)
++    );
++    assert_eq!(table.border_fill_id, 1);
++    assert!(table.cells.iter().all(|cell| cell.border_fill_id == 1
++        && cell.paragraphs.iter().all(|para| para.para_shape_id == 0
++            && para.style_id == 0
++            && para
++                .char_shapes
++                .iter()
++                .all(|shape| shape.char_shape_id == 0))));
+ }
+
+ /// 코퍼스 전수 스윕: samples 의 모든 HWP 문서 × 모든 최상위 표 × 분할점

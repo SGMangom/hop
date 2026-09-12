@@ -1,0 +1,387 @@
+ENBASKVL.HFT	BaskervilleBT	latin
+ENBERNF.HFT	BernhardFashionBT	latin
+ENBLBK.HFT	BlippoBlkBT	latin
+ENBODB.HFT	BodoniBdBT	latin
+ENBODBI.HFT	BodoniBdBT	latin
+ENBODBK.HFT	BodoniBkBT	latin
+ENBODBKI.HFT	BodoniBkBT	latin
+ENBRODWY.HFT	BroadwayEngravedBT	latin
+ENBRUSH.HFT	BrushScriptBT	latin
+ENCOBK.HFT	CooperBlkBT	latin
+ENCOBKI.HFT	CooperBlkBT	latin
+ENCORN.HFT	옥수수	latin
+ENCOSCPT.HFT	CommercialScriptBT	latin
+ENCR10B.HFT	Courier10BT	latin
+ENCR10BI.HFT	Courier10BT	latin
+ENCSCH.HFT	CentSchbookBT	latin
+ENCSCHB.HFT	CentSchbookBT	latin
+ENCSCHBI.HFT	CentSchbookBT	latin
+ENCSCHI.HFT	CentSchbookBT	latin
+ENCUCMBR.HFT	오이	latin
+ENDOMCA.HFT	DomCasualBT	latin
+ENFREEHD.HFT	Freehand591BT	latin
+ENFUTUBK.HFT	FuturaBlackBT	latin
+ENGARM.HFT	AmeriGarmndBT	latin
+ENGARMB.HFT	AmeriGarmndBT	latin
+ENGARMBI.HFT	AmeriGarmndBT	latin
+ENGARMI.HFT	AmeriGarmndBT	latin
+ENGDOS.HFT	GoudyOlStBT	latin
+ENGDOSB.HFT	GoudyOlStBT	latin
+ENGDOSBI.HFT	GoudyOlStBT	latin
+ENGDOSI.HFT	GoudyOlStBT	latin
+ENGGT.HFT	한양견고딕	latin
+ENGGTI.HFT	한양견고딕	latin
+ENGMJ.HFT	한양견명조	latin
+ENGMJI.HFT	한양견명조	latin
+ENGRP.HFT	한양그래픽	latin
+ENGRPI.HFT	한양그래픽	latin
+ENGS.HFT	한양궁서	latin
+ENGSI.HFT	한양궁서	latin
+ENGT.HFT	고딕	latin
+ENHOBO.HFT	HoboBT	latin
+ENITCNBK.HFT	NewtextBkBT	latin
+ENJGT.HFT	한양중고딕	latin
+ENJGTI.HFT	한양중고딕	latin
+ENLIBRTY.HFT	LibertyBT	latin
+ENMJ.HFT	명조	latin
+ENMUHB.HFT	MurrayHillBdBT	latin
+ENOCRA.HFT	OCR-ABT	latin
+ENOCRB10.HFT	OCR-B-10BT	latin
+ENORAT10.HFT	Orator10BT	latin
+ENORBITB.HFT	Orbit-BBT	latin
+ENPENHL.HFT	펜흘림	latin
+ENPG.HFT	필기	latin
+ENPKAV.HFT	ParkAvenueBT	latin
+ENS721LI.HFT	Swis722BT	latin
+ENSMJ.HFT	한양신명조	latin
+ENSMJI.HFT	한양신명조	latin
+ENSS.HFT	산세리프	latin
+ENSTEN.HFT	StencilBT	latin
+ENSW721L.HFT	Swis721BT	latin
+ENSYS.HFT	시스템	latin
+ENTYPE.HFT	타이프	latin
+FLMJ.HFT	명조	other
+FLSMJ.HFT	한양신명조	other
+HANB.HFT	굵은한	hangul
+HANENGB.HFT	굵은한	latin
+HANENGL.HFT	가는한	latin
+HANENGM.HFT	중간한	latin
+HANL.HFT	가는한	hangul
+HANM.HFT	중간한	hangul
+HCENBIG.HFT	# 빅	latin
+HCENDNR.HFT	# 디나루	latin
+HCENGGT.HFT	# 견고딕	latin
+HCENGJ.HFT	# 공작	latin
+HCENGMJ.HFT	# 견명조	latin
+HCENGRP.HFT	# 그래픽	latin
+HCENGS.HFT	# 궁서	latin
+HCENHEDA.HFT	# 헤드라인 A	latin
+HCENHEDB.HFT	# 헤드라인 B	latin
+HCENHMJA.HFT	# 화명조 A	latin
+HCENHMJB.HFT	# 화명조 B	latin
+HCENJGT.HFT	# 중고딕	latin
+HCENJMJ.HFT	# 중명조	latin
+HCENPG.HFT	# 필기	latin
+HCENSDNR.HFT	# 신디나루	latin
+HCENSEGT.HFT	# 세고딕	latin
+HCENSEMJ.HFT	# 세명조	latin
+HCENSGRP.HFT	# 신그래픽	latin
+HCENSJMJ.HFT	# 신중명조	latin
+HCENSMA.HFT	# 수암 A	latin
+HCENSMB.HFT	# 수암 B	latin
+HCENSMGG.HFT	# 신문견고	latin
+HCENSMGM.HFT	# 신문견명	latin
+HCENSMGT.HFT	# 신문고딕	latin
+HCENSMJ.HFT	# 신명조	latin
+HCENSMMJ.HFT	# 신문명조	latin
+HCENSMTG.HFT	# 신문태고	latin
+HCENSMTM.HFT	# 신문태명	latin
+HCENSNR.HFT	# 세나루	latin
+HCENSSGT.HFT	# 신세고딕	latin
+HCENSSNR.HFT	# 신세나루	latin
+HCENSTMJ.HFT	# 신태명조	latin
+HCENTGRP.HFT	# 태그래픽	latin
+HCENTGT.HFT	# 태고딕	latin
+HCENTMJ.HFT	# 태명조	latin
+HCENTSMJ.HFT	# 태신명조	latin
+HCHGBIG.HFT	# 빅	hangul
+HCHGDNR.HFT	# 디나루	hangul
+HCHGGGT.HFT	# 견고딕	hangul
+HCHGGJ.HFT	# 공작	hangul
+HCHGGMJ.HFT	# 견명조	hangul
+HCHGGRP.HFT	# 그래픽	hangul
+HCHGGS.HFT	# 궁서	hangul
+HCHGHMJA.HFT	# 화명조 A	hangul
+HCHGHMJB.HFT	# 화명조 B	hangul
+HCHGJGT.HFT	# 중고딕	hangul
+HCHGJMJ.HFT	# 중명조	hangul
+HCHGSDNR.HFT	# 신디나루	hangul
+HCHGSEGT.HFT	# 세고딕	hangul
+HCHGSEMJ.HFT	# 세명조	hangul
+HCHGSGRP.HFT	# 신그래픽	hangul
+HCHGSJMJ.HFT	# 신중명조	hangul
+HCHGSMA.HFT	# 수암 A	hangul
+HCHGSMB.HFT	# 수암 B	hangul
+HCHGSMGG.HFT	# 신문견고	hangul
+HCHGSMGM.HFT	# 신문견명	hangul
+HCHGSMGT.HFT	# 신문고딕	hangul
+HCHGSMJ.HFT	# 신명조	hangul
+HCHGSMMJ.HFT	# 신문명조	hangul
+HCHGSMTG.HFT	# 신문태고	hangul
+HCHGSMTM.HFT	# 신문태명	hangul
+HCHGSNR.HFT	# 세나루	hangul
+HCHGSSGT.HFT	# 신세고딕	hangul
+HCHGSSNR.HFT	# 신세나루	hangul
+HCHGSTMJ.HFT	# 신태명조	hangul
+HCHGTGRP.HFT	# 태그래픽	hangul
+HCHGTGT.HFT	# 태고딕	hangul
+HCHGTMJ.HFT	# 태명조	hangul
+HCHGTSMJ.HFT	# 태신명조	hangul
+HCHJGGT.HFT	# 견고딕	hanja
+HCHJGMJ.HFT	# 견명조	hanja
+HCHJGS.HFT	# 궁서	hanja
+HCHJJGT.HFT	# 중고딕	hanja
+HCHJJMJ.HFT	# 중명조	hanja
+HCHJSDNR.HFT	# 신디나루	hanja
+HCHJSMGG.HFT	# 신문견고	hanja
+HCHJSMGM.HFT	# 신문견명	hanja
+HCHJSMGT.HFT	# 신문고딕	hanja
+HCHJSMJ.HFT	# 신명조	hanja
+HCHJSMMJ.HFT	# 신문명조	hanja
+HCHJSSGT.HFT	# 신세고딕	hanja
+HCHJSSNR.HFT	# 신세나루	hanja
+HCHJTGT.HFT	# 태고딕	hanja
+HCHJTMJ.HFT	# 태명조	hanja
+HCJPJGT.HFT	# 중고딕	japanese
+HCJPJGTV.HFT	# 중고딕 V	japanese
+HCJPSEGT.HFT	# 세고딕	japanese
+HCJPSEGV.HFT	# 세고딕 V	japanese
+HCJPSEMJ.HFT	# 세명조	japanese
+HCJPSEMV.HFT	# 세명조 V	japanese
+HCJPTGT.HFT	# 태고딕	japanese
+HCJPTGTV.HFT	# 태고딕 V	japanese
+HCJPTMJ.HFT	# 태명조	japanese
+HCJPTMJV.HFT	# 태명조 V	japanese
+HCSPBIG.HFT	# 빅	symbol
+HCSPDNR.HFT	# 디나루	symbol
+HCSPGGT.HFT	# 견고딕	symbol
+HCSPGJ.HFT	# 공작	symbol
+HCSPGMJ.HFT	# 견명조	symbol
+HCSPGRP.HFT	# 그래픽	symbol
+HCSPGS.HFT	# 궁서	symbol
+HCSPJGT.HFT	# 중고딕	symbol
+HCSPJMJ.HFT	# 중명조	symbol
+HCSPPG.HFT	# 필기	symbol
+HCSPSDNR.HFT	# 신디나루	symbol
+HCSPSEGT.HFT	# 세고딕	symbol
+HCSPSEMJ.HFT	# 세명조	symbol
+HCSPSGRP.HFT	# 신그래픽	symbol
+HCSPSMA.HFT	# 수암 A	symbol
+HCSPSMGT.HFT	# 신문고딕	symbol
+HCSPSMJ.HFT	# 신명조	symbol
+HCSPSMMJ.HFT	# 신문명조	symbol
+HCSPSNR.HFT	# 세나루	symbol
+HCSPSSGT.HFT	# 신세고딕	symbol
+HCSPSSNR.HFT	# 신세나루	symbol
+HCSPSTMJ.HFT	# 신태명조	symbol
+HCSPTGRP.HFT	# 태그래픽	symbol
+HCSPTGT.HFT	# 태고딕	symbol
+HCSPTMJ.HFT	# 태명조	symbol
+HCSPTSMJ.HFT	# 태신명조	symbol
+HGBT.HFT	문화바탕	hangul
+HGBTJM.HFT	문화바탕제목	hangul
+HGCORN.HFT	옥수수	hangul
+HGCUCMBR.HFT	오이	hangul
+HGDU.HFT	문화돋움	hangul
+HGDUJM.HFT	문화돋움제목	hangul
+HGEGPLNT.HFT	가지	hangul
+HGGGT.HFT	한양견고딕	hangul
+HGGMJ.HFT	한양견명조	hangul
+HGGRP.HFT	한양그래픽	hangul
+HGGS.HFT	한양궁서	hangul
+HGGT.HFT	고딕	hangul
+HGJGT.HFT	한양중고딕	hangul
+HGKDNYBN.HFT	강낭콩	hangul
+HGMJ.HFT	명조	hangul
+HGOLD.HFT	옛한글	hangul
+HGPEACH.HFT	복숭아	hangul
+HGPENHL.HFT	펜흘림	hangul
+HGPG.HFT	필기	hangul
+HGSM.HFT	샘물	hangul
+HGSMJ.HFT	한양신명조	hangul
+HGSTRBRY.HFT	딸기	hangul
+HGSYS.HFT	시스템	hangul
+HGTYPE.HFT	타이프	hangul
+HJGHS.HFT	해서간자	hanja
+HJGJGT.HFT	중고딕간자	hanja
+HJGSMJ.HFT	신명조간자	hanja
+HJGSYS.HFT	시스템간자	hanja
+HJJGT.HFT	한양중고딕	hanja
+HJMJ.HFT	명조	hanja
+HJSMJ.HFT	한양신명조	hanja
+HJSYS.HFT	시스템	hanja
+HJYHS.HFT	해서약자	hanja
+HJYJGT.HFT	중고딕약자	hanja
+HJYSMJ.HFT	신명조약자	hanja
+HJYSYS.HFT	시스템약자	hanja
+HMEAC.HFT	HCIAcacia	latin
+HMEACB.HFT	HCIAcacia	latin
+HMEACBI.HFT	HCIAcacia	latin
+HMEACI.HFT	HCIAcacia	latin
+HMEAHNB.HFT	굵은안상수체영문	latin
+HMEAHNL.HFT	가는안상수체영문	latin
+HMEAHNM.HFT	중간안상수체영문	latin
+HMEBF.HFT	HCIBellflower	latin
+HMEBFB.HFT	HCIBellflower	latin
+HMEBFBI.HFT	HCIBellflower	latin
+HMEBFI.HFT	HCIBellflower	latin
+HMECENT.HFT	HCICentaurea	latin
+HMECR.HFT	HCIColumbine	latin
+HMECRB.HFT	HCIColumbine	latin
+HMECRBI.HFT	HCIColumbine	latin
+HMECRI.HFT	HCIColumbine	latin
+HMEHL.HFT	HCIHollyhock	latin
+HMEHLB.HFT	HCIHollyhock	latin
+HMEHLBI.HFT	HCIHollyhock	latin
+HMEHLI.HFT	HCIHollyhock	latin
+HMEHLN.HFT	HCIHollyhockNarrow	latin
+HMEHLNB.HFT	HCIHollyhockNarrow	latin
+HMEHLNBI.HFT	HCIHollyhockNarrow	latin
+HMEHLNI.HFT	HCIHollyhockNarrow	latin
+HMEMO.HFT	HCIMorningGlory	latin
+HMEMOB.HFT	HCIMorningGlory	latin
+HMEMOBI.HFT	HCIMorningGlory	latin
+HMEMOI.HFT	HCIMorningGlory	latin
+HMEPO.HFT	HCIPoppy	latin
+HMEPOB.HFT	HCIPoppy	latin
+HMEPOBI.HFT	HCIPoppy	latin
+HMEPOI.HFT	HCIPoppy	latin
+HMETR.HFT	HCITulip	latin
+HMETRB.HFT	HCITulip	latin
+HMETRBI.HFT	HCITulip	latin
+HMETRI.HFT	HCITulip	latin
+HMKBA.HFT	굵은안상수체	hangul
+HMKBP.HFT	휴먼굵은팸체	hangul
+HMKBS.HFT	휴먼굵은샘체	hangul
+HMKLA.HFT	가는안상수체	hangul
+HMKLP.HFT	휴먼가는팸체	hangul
+HMKLS.HFT	휴먼가는샘체	hangul
+HMKMA.HFT	중간안상수체	hangul
+HMKMG.HFT	휴먼고딕	hangul
+HMKMP.HFT	휴먼중간팸체	hangul
+HMKMS.HFT	휴먼중간샘체	hangul
+HMKOLD.HFT	휴먼옛체	hangul
+HMKSM.HFT	휴먼명조	hangul
+HSUSFL.HFT	수식	other
+HSUSR.HFT	수식	latin
+HSUSRI.HFT	수식	latin
+HSUSSP.HFT	수식	symbol
+HYENGL.HFT	HY 둥근고딕	latin
+HYHGGL.HFT	HY 둥근고딕	hangul
+HYJPGL.HFT	HY 둥근고딕	japanese
+HYSPGL.HFT	HY 둥근고딕	symbol
+JPGT.HFT	고딕	japanese
+JPJGT.HFT	한양중고딕	japanese
+JPJGTV.HFT	한양중고딕V	japanese
+JPMJ.HFT	명조	japanese
+JPSMJ.HFT	한양신명조	japanese
+JPSMJV.HFT	한양신명조V	japanese
+JPSYS.HFT	시스템	japanese
+KHANB.HFT	굵은공한	hangul
+KHANENGB.HFT	굵은공한	latin
+KHANENGL.HFT	가는공한	latin
+KHANENGM.HFT	중간공한	latin
+KHANL.HFT	가는공한	hangul
+KHANM.HFT	중간공한	hangul
+MHHGSSG.HFT	문화쓰기	hangul
+MHHGSSP.HFT	문화쓰기흘림	hangul
+SPJGT.HFT	한양중고딕	symbol
+SPMJ.HFT	명조	symbol
+SPSMJ.HFT	한양신명조	symbol
+SPSYS.HFT	시스템	symbol
+TAENMREN.HFT	태나무	latin
+TAENMRKR.HFT	태나무	hangul
+TEDNREN.HFT	신명디나루	latin
+TEDNRHG.HFT	신명디나루	hangul
+TEGGTEN.HFT	신명견고딕	latin
+TEGGTHG.HFT	신명견고딕	hangul
+TEGGTHJ.HFT	신명견고딕	hanja
+TEGGTSP.HFT	신명견고딕	symbol
+TEGMJEN.HFT	신명견명조	latin
+TEGMJHG.HFT	신명견명조	hangul
+TEGMJHJ.HFT	신명견명조	hanja
+TEGMJJP.HFT	신명견명조	japanese
+TEGMJJPV.HFT	신명견명조V	japanese
+TEGMJSP.HFT	신명견명조	symbol
+TEGNSEN.HFT	신명궁서	latin
+TEGNSHG.HFT	신명궁서	hangul
+TEGNSHJ.HFT	신명궁서	hanja
+TEHDDHG.HFT	태헤드라인D	hangul
+TEHDDRHG.HFT	태가는헤드라인D	hangul
+TEHDTHG.HFT	태헤드라인T	hangul
+TEHDTRHG.HFT	태가는헤드라인T	hangul
+TEJGTEN.HFT	신명중고딕	latin
+TEJGTHG.HFT	신명중고딕	hangul
+TEJGTHJ.HFT	신명중고딕	hanja
+TEJGTJP.HFT	신명중고딕	japanese
+TEJGTJPV.HFT	신명중고딕V	japanese
+TEJMJEN.HFT	신명중명조	latin
+TEJMJHG.HFT	신명중명조	hangul
+TEJMJHJ.HFT	신명중명조	hanja
+TESEGEN.HFT	신명세고딕	latin
+TESEGHG.HFT	신명세고딕	hangul
+TESEGHJ.HFT	신명세고딕	hanja
+TESEMEN.HFT	신명세명조	latin
+TESEMHG.HFT	신명세명조	hangul
+TESEMHJ.HFT	신명세명조	hanja
+TESENEN.HFT	신명세나루	latin
+TESENHG.HFT	신명세나루	hangul
+TESGREN.HFT	신명신그래픽	latin
+TESGRHG.HFT	신명신그래픽	hangul
+TESMGEN.HFT	신명신문고딕	latin
+TESMJEN.HFT	신명신명조	latin
+TESMJHG.HFT	신명신명조	hangul
+TESMJJP.HFT	신명신명조	japanese
+TESMJJPV.HFT	신명신명조V	japanese
+TESMMEN.HFT	신명신문명조	latin
+TESMMHG.HFT	신명신문명조	hangul
+TESMMHJ.HFT	신명신문명조	hanja
+TESSMEN.HFT	신명신신명조	latin
+TESSMHG.HFT	신명신신명조	hangul
+TESUNEN.HFT	신명순명조	latin
+TESUNHG.HFT	신명순명조	hangul
+TETGREN.HFT	신명태그래픽	latin
+TETGRHG.HFT	신명태그래픽	hangul
+TETGRSP.HFT	신명태그래픽	symbol
+TETGTEN.HFT	신명태고딕	latin
+TETGTHG.HFT	신명태고딕	hangul
+TETGTHJ.HFT	신명태고딕	hanja
+TETGTJP.HFT	신명태고딕	japanese
+TETGTJPV.HFT	신명태고딕V	japanese
+TETMJEN.HFT	신명태명조	latin
+TETMJHG.HFT	신명태명조	hangul
+TETMJHJ.HFT	신명태명조	hanja
+TETMJJP.HFT	신명태명조	japanese
+TETMJJPV.HFT	신명태명조V	japanese
+USER.HFT	명조	user
+USHGPL.HFT	한글풀어쓰기	user
+YJENBMGM.HFT	양재본목각M	latin
+YJENCHM.HFT	양재참숯B	latin
+YJENDNMJ.HFT	양재다운명조M	latin
+YJENDUG.HFT	양재둘기	latin
+YJENINI.HFT	양재이니셜	latin
+YJENMAE.HFT	양재매화	latin
+YJENSHN.HFT	양재샤넬	latin
+YJENSOSL.HFT	양재소슬	latin
+YJENTTB.HFT	양재튼튼B	latin
+YJENWDA.HFT	양재와당	latin
+YJHGBMGM.HFT	양재본목각M	hangul
+YJHGCHM.HFT	양재참숯B	hangul
+YJHGDNMJ.HFT	양재다운명조M	hangul
+YJHGDUG.HFT	양재둘기	hangul
+YJHGINI.HFT	양재이니셜	hangul
+YJHGMAE.HFT	양재매화	hangul
+YJHGSHN.HFT	양재샤넬	hangul
+YJHGSOSL.HFT	양재소슬	hangul
+YJHGTTB.HFT	양재튼튼B	hangul
+YJHGWDA.HFT	양재와당	hangul

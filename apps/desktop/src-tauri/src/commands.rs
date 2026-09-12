@@ -1,4 +1,5 @@
 use crate::font_catalog::LocalFontEntry;
+use crate::hft_catalog::HftFontEntry;
 use crate::recent_documents::{self, RecentDocument};
 use crate::state::{
     editable_core_from_bytes, AppState, DocumentFormat, DocumentOpenResult,
@@ -96,6 +97,16 @@ pub fn prepare_staged_hwp_save(app: AppHandle, target_path: String) -> Result<St
 }
 
 #[tauri::command]
+pub fn prepare_staged_document_save(app: AppHandle, target_path: String) -> Result<String, String> {
+    prepare_staged_file(
+        &app,
+        PathBuf::from(target_path),
+        ensure_document_target_path,
+        staged_document_save_path,
+    )
+}
+
+#[tauri::command]
 pub fn prepare_staged_hwp_pdf_export(
     app: AppHandle,
     target_path: String,
@@ -106,6 +117,19 @@ pub fn prepare_staged_hwp_pdf_export(
         ensure_pdf_target_path,
         staged_hwp_pdf_export_path,
     )
+}
+
+#[tauri::command]
+pub fn prepare_staged_document_pdf_export(
+    app: AppHandle,
+    target_path: String,
+    source_format: DocumentFormat,
+) -> Result<String, String> {
+    let target_path = PathBuf::from(target_path);
+    ensure_pdf_target_path(&target_path)?;
+    let staged_path = staged_document_pdf_export_path(&target_path, source_format)?;
+    allow_frontend_fs_file(&app, &staged_path)?;
+    Ok(staged_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -124,6 +148,32 @@ pub fn commit_staged_hwp_save(
         .lock()
         .map_err(|_| "문서 세션 잠금 실패".to_string())?
         .commit_staged_hwp_save(
+            &doc_id,
+            PathBuf::from(staged_path),
+            target_path.clone(),
+            expected_revision,
+            allow_external_overwrite.unwrap_or(false),
+        )?;
+    let _ = recent_documents::record_document(&app, &target_path);
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn commit_staged_document_save(
+    app: AppHandle,
+    doc_id: String,
+    staged_path: String,
+    target_path: String,
+    expected_revision: Option<u64>,
+    allow_external_overwrite: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<SaveResult, String> {
+    let target_path = PathBuf::from(target_path);
+    let result = state
+        .sessions
+        .lock()
+        .map_err(|_| "문서 세션 잠금 실패".to_string())?
+        .commit_staged_document_save(
             &doc_id,
             PathBuf::from(staged_path),
             target_path.clone(),
@@ -267,6 +317,17 @@ pub fn export_pdf_from_hwp_path(
     page_range: Option<PageRange>,
     open_after: bool,
 ) -> Result<String, String> {
+    export_pdf_from_document_path(app, staged_path, target_path, page_range, open_after)
+}
+
+#[tauri::command]
+pub fn export_pdf_from_document_path(
+    app: AppHandle,
+    staged_path: String,
+    target_path: String,
+    page_range: Option<PageRange>,
+    open_after: bool,
+) -> Result<String, String> {
     let job_id = Uuid::new_v4().to_string();
 
     let staged_path = PathBuf::from(staged_path);
@@ -346,6 +407,16 @@ pub fn read_local_font(path: String) -> Result<Vec<u8>, String> {
     crate::font_catalog::read_desktop_local_font(Path::new(&path))
 }
 
+#[tauri::command]
+pub fn list_hft_fonts() -> Result<Vec<HftFontEntry>, String> {
+    crate::hft_catalog::collect_desktop_hft_font_entries()
+}
+
+#[tauri::command]
+pub fn read_hft_font(path: String) -> Result<Vec<u8>, String> {
+    crate::hft_catalog::read_desktop_hft_font(Path::new(&path))
+}
+
 fn allow_frontend_fs_file(app: &AppHandle, path: &Path) -> Result<(), String> {
     let scope = app.fs_scope();
     scope
@@ -385,7 +456,17 @@ fn ensure_hwp_target_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_document_target_path(path: &Path) -> Result<(), String> {
+    ensure_target_parent(path, "저장 경로")?;
+    DocumentFormat::from_path(path)?;
+    Ok(())
+}
+
 fn staged_hwp_save_path(target_path: &Path) -> Result<PathBuf, String> {
+    staged_sibling_path(target_path, ".hop-save-", ".tmp")
+}
+
+fn staged_document_save_path(target_path: &Path) -> Result<PathBuf, String> {
     staged_sibling_path(target_path, ".hop-save-", ".tmp")
 }
 
@@ -396,6 +477,17 @@ fn ensure_pdf_target_path(path: &Path) -> Result<(), String> {
 
 fn staged_hwp_pdf_export_path(target_path: &Path) -> Result<PathBuf, String> {
     staged_sibling_path(target_path, ".hop-export-", ".hwp")
+}
+
+fn staged_document_pdf_export_path(
+    target_path: &Path,
+    source_format: DocumentFormat,
+) -> Result<PathBuf, String> {
+    let suffix = match source_format {
+        DocumentFormat::Hwp => ".hwp",
+        DocumentFormat::Hwpx => ".hwpx",
+    };
+    staged_sibling_path(target_path, ".hop-export-", suffix)
 }
 
 fn ensure_target_parent(path: &Path, context: &str) -> Result<(), String> {
@@ -536,6 +628,15 @@ mod tests {
     }
 
     #[test]
+    fn ensure_document_target_path_accepts_hwp_and_hwpx() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(ensure_document_target_path(&dir.path().join("saved.hwp")).is_ok());
+        assert!(ensure_document_target_path(&dir.path().join("saved.hwpx")).is_ok());
+        assert!(ensure_document_target_path(&dir.path().join("saved.txt")).is_err());
+    }
+
+    #[test]
     fn staged_hwp_save_path_keeps_parent_and_adds_unique_suffix() {
         let dir = tempfile::tempdir().unwrap();
         let target_path = dir.path().join("saved.hwp");
@@ -549,6 +650,26 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .starts_with("saved.hwp.hop-save-"));
+        assert!(staged_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".tmp"));
+    }
+
+    #[test]
+    fn staged_document_save_path_supports_hwpx_sibling_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_path = dir.path().join("saved.hwpx");
+
+        let staged_path = staged_document_save_path(&target_path).unwrap();
+
+        assert_eq!(staged_path.parent(), target_path.parent());
+        assert!(staged_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("saved.hwpx.hop-save-"));
         assert!(staged_path
             .file_name()
             .unwrap()
@@ -576,5 +697,29 @@ mod tests {
                 .and_then(|extension| extension.to_str()),
             Some("hwp")
         );
+    }
+
+    #[test]
+    fn staged_document_pdf_export_path_preserves_source_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let target_path = dir.path().join("export.pdf");
+
+        let hwp = staged_document_pdf_export_path(&target_path, DocumentFormat::Hwp).unwrap();
+        let hwpx = staged_document_pdf_export_path(&target_path, DocumentFormat::Hwpx).unwrap();
+
+        assert_eq!(hwp.parent(), target_path.parent());
+        assert_eq!(hwpx.parent(), target_path.parent());
+        assert_eq!(hwp.extension().and_then(|ext| ext.to_str()), Some("hwp"));
+        assert_eq!(hwpx.extension().and_then(|ext| ext.to_str()), Some("hwpx"));
+        assert!(hwp
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("export.pdf.hop-export-"));
+        assert!(hwpx
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("export.pdf.hop-export-"));
     }
 }

@@ -2,7 +2,7 @@ import type { CharProperties, EventBus, FontSet, ParaProperties, WasmBridge } fr
 import { userSettings } from '@/upstream/core';
 import type { CommandDispatcher } from '@/upstream/commands';
 import { loadWebFonts } from '@/core/font-loader';
-import { getLocalFonts } from '@/core/local-fonts';
+import { getLocalFonts, hasExactLocalDerivedFont } from '@/core/local-fonts';
 import { sanitizeAuthoringFontFamily } from '@/core/font-authoring-policy';
 import { getCustomSelectRoot, syncCustomSelect } from './custom-select';
 
@@ -695,7 +695,7 @@ export class Toolbar {
   /** 대표 글꼴 세트를 7개 언어에 일괄 적용 */
   private async applyFontSelection(name: string): Promise<void> {
     const requestId = this.beginFontApplyRequest();
-    const authoringName = sanitizeAuthoringFontFamily(name);
+    const authoringName = sanitizeAuthoringFontFamily(name, hasExactLocalDerivedFont(name));
     await loadWebFonts([authoringName]).catch(() => undefined);
     if (!this.isLatestFontApplyRequest(requestId)) return;
 
@@ -733,7 +733,9 @@ export class Toolbar {
     const langKeys: (keyof Omit<FontSet, 'name'>)[] = [
       'korean', 'english', 'chinese', 'japanese', 'other', 'symbol', 'user',
     ];
-    const authoringFonts = langKeys.map((key) => sanitizeAuthoringFontFamily(fs[key]));
+    const authoringFonts = langKeys.map((key) => (
+      sanitizeAuthoringFontFamily(fs[key], hasExactLocalDerivedFont(fs[key]))
+    ));
     await loadWebFonts(authoringFonts).catch(() => undefined);
     if (!this.isLatestFontApplyRequest(requestId)) return;
     const ids: number[] = [];

@@ -7,6 +7,7 @@ HOP는 studio host에서 fallback으로 사용할 수 있는 재배포 가능 �
 
 | 파일 | 라이선스 | 출처 |
 | --- | --- | --- |
+| `computer-modern/ComputerModern-*.ttf` (수식·PDF) | BaKoMa 허가 | [원본 Computer Modern 및 변환 기록](computer-modern/README.md) |
 | `Pretendard-*.woff2` | SIL OFL 1.1 | Pretendard |
 | `NotoSansKR-*.woff2` | SIL OFL 1.1 | Google Fonts |
 | `NotoSerifKR-*.woff2` | SIL OFL 1.1 | Google Fonts |

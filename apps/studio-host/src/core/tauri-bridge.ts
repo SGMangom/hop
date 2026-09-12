@@ -1,5 +1,6 @@
-import { WasmBridge } from '@/upstream/core';
-import type { DocumentInfo } from '@/upstream/core';
+import { EquationBridge } from './equation-bridge';
+import { buildContentLossNotice } from '@/upstream/core';
+import type { ContentLossReport, DocumentInfo } from '@/upstream/core';
 import { remove, stat } from '@tauri-apps/plugin-fs';
 import { finiteFileSize, readFileInChunks, writeFileInChunks } from './chunked-fs';
 
@@ -77,6 +78,7 @@ export interface DesktopBridgeApi {
   createNewWindow(): Promise<string>;
   saveDocumentFromCommand(): Promise<DesktopSaveResult | null>;
   saveDocumentAsFromCommand(): Promise<DesktopSaveResult | null>;
+  saveDocumentAsFormatFromCommand(format: DocumentFormat): Promise<DesktopSaveResult | null>;
   exportPdfFromCommand(): Promise<string | null>;
   printCurrentWebview(): Promise<void>;
   destroyCurrentWindow(): Promise<void>;
@@ -85,6 +87,7 @@ export interface DesktopBridgeApi {
   listRecentDocuments(): Promise<RecentDocument[]>;
   clearRecentDocuments(): Promise<void>;
   renderDocumentPreview(path: string): Promise<string>;
+  getSourcePath(): string | null;
   getUpdateState(): Promise<DesktopUpdateState>;
   startUpdateInstall(): Promise<void>;
   restartToApplyUpdate(): Promise<void>;
@@ -93,12 +96,16 @@ export interface DesktopBridgeApi {
   confirmWindowClose(): Promise<boolean>;
 }
 
-export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
+export class TauriBridge extends EquationBridge implements DesktopBridgeApi {
   private docId: string | null = null;
   private sourcePath: string | null = null;
   private sourceFormat: DocumentFormat = 'hwp';
   private revision = 0;
   private dirty = false;
+
+  getSourcePath(): string | null {
+    return this.sourcePath;
+  }
 
   async openDocumentFromDialog(): Promise<DesktopLoadPayload | null> {
     const { open } = await import('@tauri-apps/plugin-dialog');
@@ -172,17 +179,22 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     if (!this.sourcePath) {
       return this.saveDocumentAsFromCommand();
     }
-    if (this.sourceFormat === 'hwpx') {
-      throw new Error('HWPX 원본 저장은 아직 안전하게 지원하지 않습니다. 다른 이름으로 저장에서 HWP 파일로 저장하세요.');
-    }
-    return this.saveHwpThroughStaging(docId, null);
+    return this.saveDocumentThroughStaging(docId, null, this.sourceFormat);
   }
 
   async saveDocumentAsFromCommand(): Promise<DesktopSaveResult | null> {
+    return this.saveDocumentAsFormatFromCommand(this.sourceFormat);
+  }
+
+  async saveDocumentAsFormatFromCommand(format: DocumentFormat): Promise<DesktopSaveResult | null> {
     const docId = this.ensureDocumentLoaded();
-    const targetPath = await this.selectSavePath(this.suggestedHwpName(), 'HWP 문서', ['hwp']);
+    const targetPath = await this.selectSavePath(
+      this.suggestedDocumentName(format),
+      format === 'hwpx' ? 'HWPX 문서' : 'HWP 문서',
+      [format],
+    );
     if (!targetPath) return null;
-    return this.saveHwpThroughStaging(docId, this.withExtension(targetPath, 'hwp'));
+    return this.saveDocumentThroughStaging(docId, this.withExtension(targetPath, format), format);
   }
 
   async exportPdfFromCommand(): Promise<string | null> {
@@ -190,12 +202,19 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     const targetPath = await this.selectSavePath(this.suggestedPdfName(), 'PDF 문서', ['pdf']);
     if (!targetPath) return null;
     const finalPath = this.withExtension(targetPath, 'pdf');
-    const stagedPath = await this.invoke<string>('prepare_staged_hwp_pdf_export', {
+    const stagedPath = await this.invoke<string>('prepare_staged_document_pdf_export', {
       targetPath: finalPath,
+      sourceFormat: this.sourceFormat,
     });
     try {
-      await this.writeCurrentHwpToPath(stagedPath);
-      return await this.invoke<string>('export_pdf_from_hwp_path', {
+      const contentLoss = await this.writeCurrentDocumentToPath(stagedPath, this.sourceFormat);
+      if (contentLoss.losses.length > 0) {
+        throw new Error(
+          `PDF 생성용 ${contentLoss.outputFormat.toUpperCase()} 직렬화에서 `
+          + `내용 손실 ${contentLoss.losses.length}건이 감지되어 PDF 생성을 중단했습니다.`,
+        );
+      }
+      return await this.invoke<string>('export_pdf_from_document_path', {
         stagedPath,
         targetPath: finalPath,
         pageRange: null,
@@ -324,9 +343,10 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     });
   }
 
-  private async saveHwpThroughStaging(
+  private async saveDocumentThroughStaging(
     docId: string,
     targetPath: string | null,
+    format: DocumentFormat,
   ): Promise<DesktopSaveResult | null> {
     const finalPath = targetPath ?? this.sourcePath;
     if (!finalPath) throw new Error('새 문서는 저장 경로가 필요합니다');
@@ -334,10 +354,10 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     const allowExternalOverwrite = await this.confirmExternalOverwriteIfNeeded(docId, finalPath);
     if (allowExternalOverwrite === null) return null;
 
-    const stagedPath = await this.invoke<string>('prepare_staged_hwp_save', { targetPath: finalPath });
+    const stagedPath = await this.invoke<string>('prepare_staged_document_save', { targetPath: finalPath });
     try {
-      await this.writeCurrentHwpToPath(stagedPath);
-      const result = await this.invoke<DesktopSaveResult>('commit_staged_hwp_save', {
+      const contentLoss = await this.writeCurrentDocumentToPath(stagedPath, format);
+      const result = await this.invoke<DesktopSaveResult>('commit_staged_document_save', {
         docId,
         stagedPath,
         targetPath: finalPath,
@@ -346,6 +366,7 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
       });
       this.applyNativeSaveResult(result);
       await this.noteFinderRecentDocument(finalPath);
+      await this.showContentLossWarning(contentLoss);
       return result;
     } finally {
       await remove(stagedPath).catch(() => undefined);
@@ -405,9 +426,6 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
   }
 
   private async saveCurrentDocumentForSafety(): Promise<DesktopSaveResult | null> {
-    if (this.sourceFormat === 'hwpx') {
-      return this.saveDocumentAsFromCommand();
-    }
     return this.saveDocumentFromCommand();
   }
 
@@ -442,13 +460,34 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     });
   }
 
-  private async writeCurrentHwpToPath(path: string): Promise<void> {
-    await writeFileInChunks(path, super.exportHwp());
+  private async showContentLossWarning(report: ContentLossReport): Promise<void> {
+    const notice = buildContentLossNotice(report);
+    if (!notice) return;
+    const { message } = await import('@tauri-apps/plugin-dialog');
+    await message(notice, {
+      title: '일부 내용 보존 불가',
+      kind: 'warning',
+      buttons: { ok: '확인' },
+    });
+  }
+
+  private async writeCurrentDocumentToPath(
+    path: string,
+    format: DocumentFormat,
+  ): Promise<ContentLossReport> {
+    const artifact = format === 'hwpx'
+      ? super.exportHwpxWithReport()
+      : super.exportHwpWithReport();
+    await writeFileInChunks(path, artifact.bytes);
+    return artifact.contentLoss;
   }
 
   private withExtension(path: string, extension: string): string {
-    const escaped = extension.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`\\.${escaped}$`, 'i').test(path) ? path : `${path}.${extension}`;
+    const documentExtension = /(?:\.(?:hwp|hwpx))+$/i;
+    if (documentExtension.test(path)) {
+      return path.replace(documentExtension, `.${extension}`);
+    }
+    return `${path}.${extension}`;
   }
 
   private async readFileForOpen(path: string): Promise<{
@@ -519,9 +558,9 @@ export class TauriBridge extends WasmBridge implements DesktopBridgeApi {
     this.updateDocumentTitle();
   }
 
-  private suggestedHwpName(): string {
+  private suggestedDocumentName(format: DocumentFormat): string {
     const name = this.fileName.replace(/\.(hwp|hwpx)$/i, '') || 'document';
-    return `${name}.hwp`;
+    return `${name}.${format}`;
   }
 
   private suggestedPdfName(): string {

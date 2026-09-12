@@ -32,6 +32,21 @@ export function isAuthoringBlockedFontFamily(family: string | null | undefined):
   return /^hy(?:[가-힣]|headline|gothic|graphic|myeong|mj|gt|gp|sn|sm)/i.test(key);
 }
 
+/**
+ * Restricted Hancom/Human family names remain blocked by default.  A desktop
+ * caller may opt a single family back in only after it has verified that an
+ * exact HFT-derived standard font face exists in the private runtime cache.
+ *
+ * Keep this decision outside the static block-list so browser/system fonts with
+ * a coincidentally matching family name can never relax the authoring policy.
+ */
+export function isAuthoringFontFamilyAllowed(
+  family: string | null | undefined,
+  hasExactDerivedFace = false,
+): boolean {
+  return !isAuthoringBlockedFontFamily(family) || hasExactDerivedFace;
+}
+
 function authoringFallbackForFontFamily(family: string | null | undefined): string {
   const key = fontFamilyKey(family);
   if (
@@ -46,18 +61,21 @@ function authoringFallbackForFontFamily(family: string | null | undefined): stri
   return SANS_FALLBACK;
 }
 
-export function sanitizeAuthoringFontFamily(family: string): string {
+export function sanitizeAuthoringFontFamily(family: string, hasExactDerivedFace = false): string {
   const trimmed = family.trim();
   if (!trimmed) return trimmed;
-  return isAuthoringBlockedFontFamily(trimmed)
+  return !isAuthoringFontFamilyAllowed(trimmed, hasExactDerivedFace)
     ? authoringFallbackForFontFamily(trimmed)
     : trimmed;
 }
 
-export function filterAuthoringFontFamilies(families: Iterable<string>): string[] {
+export function filterAuthoringFontFamilies(
+  families: Iterable<string>,
+  hasExactDerivedFace: (family: string) => boolean = () => false,
+): string[] {
   return Array.from(families)
     .map((family) => family.trim())
-    .filter((family) => family && !isAuthoringBlockedFontFamily(family));
+    .filter((family) => family && isAuthoringFontFamilyAllowed(family, hasExactDerivedFace(family)));
 }
 
 function fontFamilyKey(family: string | null | undefined): string {

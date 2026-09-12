@@ -68,12 +68,15 @@ test('active HOP font catalog only references packaged font assets', async () =>
     join(repoRoot, 'apps/studio-host/src/core/font-catalog.ts'),
     'utf8',
   );
-  const referencedFonts = Array.from(fontCatalog.matchAll(/['"]\/fonts\/([^'"]+)['"]/g),
+  const referencedFonts = Array.from(fontCatalog.matchAll(/['"](?:\.\/|\/)fonts\/([^'"]+)['"]/g),
     (match) => match[1]);
   assert.ok(referencedFonts.length > 0, 'font loader should declare packaged font assets');
 
   for (const fileName of new Set(referencedFonts)) {
-    await access(join(repoRoot, 'assets/fonts', fileName));
+    const packagedPath = fileName.startsWith('ComputerModern-')
+      ? join(repoRoot, 'assets/fonts/computer-modern', fileName)
+      : join(repoRoot, 'assets/fonts', fileName);
+    await access(packagedPath);
   }
 });
 
@@ -109,11 +112,12 @@ test('HOP defers editor engine and table command behavior to upstream rhwp', asy
   );
   const overrideIds = manifest.overrides.map((entry) => entry.id);
 
-  assert.ok(!overrideIds.some((id) => id.startsWith('engine/')));
+  const engineOverrides = overrideIds.filter((id) => id.startsWith('engine/'));
+  assert.deepEqual(engineOverrides, ['engine/input-handler']);
   assert.ok(!overrideIds.includes('command/commands/table'));
 
+  await access(join(repoRoot, 'apps/studio-host/src/engine/input-handler.ts'));
   for (const path of [
-    'apps/studio-host/src/engine/input-handler.ts',
     'apps/studio-host/src/engine/table-object-renderer.ts',
     'apps/studio-host/src/engine/table-resize-renderer.ts',
     'apps/studio-host/src/command/commands/table.ts',
@@ -192,11 +196,17 @@ test('desktop release artifact presence check is pipefail-safe', async () => {
 test('HOP keeps PDF export menu-only without a stale Ctrl+E label', async () => {
   const fileCommands = await readFile(join(repoRoot, 'apps/studio-host/src/command/commands/file.ts'), 'utf8');
   const indexHtml = await readFile(join(repoRoot, 'apps/studio-host/index.html'), 'utf8');
+  const nativeMenu = await readFile(join(repoRoot, 'apps/desktop/src-tauri/src/menu.rs'), 'utf8');
   const pdfMenuItem = indexHtml.match(/<div class="md-item disabled" data-cmd="file:export-pdf">.*?<\/div>/);
 
   assert.doesNotMatch(fileCommands, /id:\s*['"]file:export-pdf['"][\s\S]*?shortcutLabel:/);
   assert.ok(pdfMenuItem, 'PDF export menu item should exist');
   assert.doesNotMatch(pdfMenuItem[0], /md-shortcut|Ctrl\+E|Cmd\+E/);
+  assert.doesNotMatch(
+    nativeMenu,
+    /file:export-pdf[\s\S]{0,160}CmdOrCtrl\+E/,
+    'native PDF menu must not steal the editor Ctrl/Cmd+E delete shortcut',
+  );
 });
 
 function git(args) {
