@@ -60,6 +60,10 @@ fn searchable_pdf_options(font_paths: Vec<PathBuf>) -> rhwp::renderer::pdf::PdfE
         fallback_serif: "Noto Sans KR".to_string(),
         fallback_sans: "Noto Sans KR".to_string(),
         fallback_mono: "Noto Sans KR".to_string(),
+        // Hancom's legacy equation face is exact when it is available locally.
+        // Keep bundled Computer Modern as the redistributable fallback: HOP never
+        // ships or copies proprietary HyhwpEQ bytes.
+        equation_font: Some("'HyhwpEQ', 'Computer Modern', serif".to_string()),
         font_paths,
         embed_text: true,
         ..Default::default()

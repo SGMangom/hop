@@ -9,7 +9,7 @@ pub fn export_core_to_pdf(
     core: &DocumentCore,
     target_path: &Path,
     page_range: Option<PageRange>,
-    font_dirs: Vec<PathBuf>,
+    mut font_dirs: Vec<PathBuf>,
     mut on_progress: impl FnMut(&str, u32, u32, String),
 ) -> Result<u32, String> {
     ensure_pdf_path(target_path)?;
@@ -34,11 +34,65 @@ pub fn export_core_to_pdf(
         );
     }
 
+    add_optional_hyhwpeq_font_dir(&mut font_dirs);
     let pdf_bytes = searchable_pdf_from_svg_pages(&svg_pages, font_dirs)?;
     atomic_write(target_path, &pdf_bytes)?;
     on_progress("write", total, total, "PDF 파일을 저장했습니다".to_string());
 
     Ok(total)
+}
+
+const HOP_HYHWPEQ_PATH_ENV: &str = "HOP_HYHWPEQ_PATH";
+
+fn add_optional_hyhwpeq_font_dir(font_dirs: &mut Vec<PathBuf>) {
+    let mut candidates = Vec::new();
+    if let Some(configured) = std::env::var_os(HOP_HYHWPEQ_PATH_ENV) {
+        candidates.push(PathBuf::from(configured));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join("Downloads/HYHWPEQ"));
+    }
+
+    for candidate in candidates {
+        let Some(dir) = hyhwpeq_font_dir_from_candidate(&candidate) else {
+            continue;
+        };
+        if !font_dirs
+            .iter()
+            .any(|existing| same_existing_path(existing, &dir))
+        {
+            font_dirs.push(dir);
+        }
+        break;
+    }
+}
+
+fn hyhwpeq_font_dir_from_candidate(candidate: &Path) -> Option<PathBuf> {
+    let dir = if candidate.is_file() {
+        let name = candidate.file_name()?.to_string_lossy();
+        if !name.eq_ignore_ascii_case("HYHWPEQ.TTF") {
+            return None;
+        }
+        candidate.parent()?.to_path_buf()
+    } else if candidate.is_dir() {
+        let contains_face = ["HYHWPEQ.TTF", "HyhwpEQ.ttf", "hyhwpeq.ttf"]
+            .iter()
+            .any(|name| candidate.join(name).is_file());
+        if !contains_face {
+            return None;
+        }
+        candidate.to_path_buf()
+    } else {
+        return None;
+    };
+    std::fs::canonicalize(&dir).ok().or(Some(dir))
+}
+
+fn same_existing_path(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
 }
 
 pub(crate) fn ensure_pdf_path(path: &Path) -> Result<(), String> {
@@ -76,6 +130,24 @@ fn resolve_page_range(page_range: Option<PageRange>, page_count: u32) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hyhwpeq_candidate_accepts_exact_face_file_or_parent_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let font = temp.path().join("HYHWPEQ.TTF");
+        std::fs::write(&font, b"local-only-test-face").unwrap();
+        let expected = std::fs::canonicalize(temp.path()).unwrap();
+
+        assert_eq!(
+            hyhwpeq_font_dir_from_candidate(&font),
+            Some(expected.clone())
+        );
+        assert_eq!(hyhwpeq_font_dir_from_candidate(temp.path()), Some(expected));
+        assert_eq!(
+            hyhwpeq_font_dir_from_candidate(&temp.path().join("missing.ttf")),
+            None
+        );
+    }
 
     #[test]
     fn ensure_pdf_path_accepts_pdf_case_insensitively() {
@@ -150,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn equation_hwp_roundtrip_exports_computer_modern_pdf() {
+    fn equation_hwp_roundtrip_exports_exact_local_or_bundled_equation_font() {
         let script = r"i\hbar\frac{\partial\psi}{\partial t}=-\frac{\hbar^2}{2m}\nabla^2\psi+V\psi";
         let font_dir =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts/computer-modern");
@@ -200,7 +272,10 @@ mod tests {
         let pdf = std::fs::read(&pdf_path).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
         let text = String::from_utf8_lossy(&pdf);
-        assert!(text.contains("ComputerModern"));
+        assert!(
+            text.contains("HyhwpEQ") || text.contains("ComputerModern"),
+            "PDF must use local HyhwpEQ when available or bundled Computer Modern otherwise"
+        );
         assert!(text.contains("/FontFile"), "PDF must embed font data");
         assert!(text.contains("/ToUnicode"));
         assert!(!text.contains("LatinModern"));
